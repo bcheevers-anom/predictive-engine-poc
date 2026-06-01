@@ -64,3 +64,21 @@ async def test_read_only_guard():
     assert not hasattr(client, "put")
     assert not hasattr(client, "delete")
     assert not hasattr(client, "post_intelligence")
+
+
+def test_sha256_verification_pass(tmp_path):
+    import hashlib
+    from pte.gateway.snapshot import verify_sha256
+    data = b"test payload"
+    f = tmp_path / "chunk.json"
+    f.write_bytes(data)
+    digest = hashlib.sha256(data).hexdigest()
+    assert verify_sha256(str(f), digest) is True
+
+
+def test_sha256_verification_fail(tmp_path):
+    import hashlib
+    from pte.gateway.snapshot import verify_sha256
+    f = tmp_path / "chunk.json"
+    f.write_bytes(b"bad data")
+    assert verify_sha256(str(f), "0" * 64) is False
