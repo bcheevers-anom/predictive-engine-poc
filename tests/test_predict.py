@@ -30,3 +30,24 @@ def test_time_split():
     test_dates = {r["ts"] for r in test}
     assert "2025-05-01" in test_dates
     assert "2025-01-01" not in test_dates
+
+from pte.predict.t1_vuln_exploit import T1VulnExploit
+
+def test_t1_fits_and_predicts(tmp_path):
+    from pte.features.store import FeatureStore
+    store = FeatureStore(base_dir=str(tmp_path / "features"))
+    records = [
+        {"entity_id": f"cve-{i}", "epss_score": 0.01 * i, "cvss_score": float(i % 10), "tag_count": i % 5, "tier": "OBSERVED", "exploited": int(i > 8)}
+        for i in range(1, 20)
+    ]
+    store.write("batch001", "vulnerability_features", records)
+
+    t1 = T1VulnExploit(batch_id="batch001", data_dir=str(tmp_path))
+    t1.fit()
+    report = t1.evaluate()
+    assert "pr_auc" in report
+    assert "epss_baseline_pr_auc" in report
+    assert report["pr_auc"] >= 0.0
+
+def test_t1_aql_port_idiom_recorded():
+    assert "LogisticRegression" in T1VulnExploit.aql_port_idiom or "RandomForest" in T1VulnExploit.aql_port_idiom
