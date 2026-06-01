@@ -1,13 +1,19 @@
+from collections import defaultdict
+from pte.dedup.merge import build_canonical_record
+
+
+def normalise_observable_key(value: str, itype: str) -> str:
+    """Normalise to (value, type) dedup key. Case-insensitive for domains/email; exact for IPs/hashes."""
+    domain_types = {"domain", "email", "url", "hostname", "uri"}
+    if itype.lower() in domain_types:
+        return f"{value.lower().strip()}::{itype.lower()}"
+    return f"{value.strip()}::{itype.lower()}"
+
+
 def l1_dedup_batch(records: list[dict]) -> list[dict]:
-    """Stub — deduplicates observable records. Full implementation in Task 10."""
-    seen = set()
-    result = []
+    """Deterministic dedup of observables by (value, itype). No LLM. O(n)."""
+    buckets: dict[str, list[dict]] = defaultdict(list)
     for r in records:
-        key = f"{r.get('value', '')}::{r.get('itype', '')}"
-        if key not in seen:
-            seen.add(key)
-            r.setdefault("dedup_status", "singleton")
-            r.setdefault("merged_from", [r.get("id", "")])
-            r.setdefault("source_feed_count", 1)
-            result.append(r)
-    return result
+        key = normalise_observable_key(r.get("value", ""), r.get("itype", ""))
+        buckets[key].append(r)
+    return [build_canonical_record(group) for group in buckets.values()]
