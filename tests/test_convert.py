@@ -1,3 +1,4 @@
+import json
 import pytest
 from pte.convert.refang import refang
 from pte.convert.normalize_tags import normalize_tag, is_workflow_tag
@@ -60,3 +61,33 @@ def test_tier1_cleans_observable():
     assert "Cobalt Strike" in entity.tags
     assert entity.validation_status == "ok"
     assert entity.provenance.tier == "OBSERVED"
+
+
+# Task 14: Discovery pass tests
+from unittest.mock import AsyncMock, MagicMock
+from pte.convert.discovery import DiscoveryRunner
+
+@pytest.mark.asyncio
+async def test_discovery_emits_coverage_report(tmp_path):
+    mock_llm = AsyncMock()
+    mock_llm.complete.return_value = MagicMock(
+        dimensions={
+            "industry": {"presence_rate": 0.7, "mean_confidence": 0.65},
+            "tool":     {"presence_rate": 0.9, "mean_confidence": 0.85},
+            "tactic":   {"presence_rate": 0.6, "mean_confidence": 0.75},
+            "technique":{"presence_rate": 0.5, "mean_confidence": 0.70},
+            "company":  {"presence_rate": 0.2, "mean_confidence": 0.40},
+            "date":     {"presence_rate": 0.3, "mean_confidence": 0.80},
+        },
+        quarantine_count=0,
+        sample_size=10,
+        notes="",
+    )
+    runner = DiscoveryRunner(llm_client=mock_llm, data_dir=str(tmp_path), run_id="test")
+    await runner.run_slice(batch_id="batch001", feed="gti", entity_type="campaign", blobs=["blob1"] * 10)
+    report_path = tmp_path / "coverage" / "batch001" / "discovery_gti_campaign.json"
+    assert report_path.exists()
+    data = json.loads(report_path.read_text())
+    assert "dimensions" in data
+    assert data["sample_size"] == 10
+    assert 0.0 <= data["dimensions"]["industry"]["presence_rate"] <= 1.0
