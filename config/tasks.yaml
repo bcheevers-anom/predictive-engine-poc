@@ -1,0 +1,44 @@
+tasks:
+  t1_vuln_exploit:
+    question: "What CVEs will be exploited in the wild within the forecast horizon?"
+    horizon: 30d
+    algorithm: LogisticRegression
+    aql_port_idiom: "... | fit LogisticRegression epss_score cvss_score age_days tag_count into 'pte_t1' ; ... | apply pte_t1"
+    metric: pr_auc
+    baselines:
+      - epss_only
+      - frequency
+    accepted_tiers: [OBSERVED, DERIVED]
+
+  t2_tool_tactic:
+    question: "Which tools and tactics are trending upward?"
+    horizon: 90d
+    algorithm: ARIMA
+    aql_port_idiom: "... | fit ARIMA count p=2 d=1 q=1 into 'pte_t2' ; ... | apply pte_t2"
+    metric: mae
+    baselines:
+      - previous_period
+    accepted_tiers: [OBSERVED, DERIVED, LLM_EXTRACTED]
+
+  t2_industry:
+    question: "Which tools and tactics will sector S face in the next quarter?"
+    horizon: 90d
+    algorithm: RandomForest
+    aql_port_idiom: "... | fit RandomForest industry tool_cooccur_count tactic_cooccur_count trend_slope into 'pte_t2ind' ; ... | apply pte_t2ind"
+    metric: top_k_accuracy
+    baselines:
+      - sector_frequency
+    accepted_tiers: [OBSERVED, DERIVED, LLM_EXTRACTED]
+    coverage_gated: true
+
+  t3_company:
+    question: "Which companies are most likely targeted by a given actor/campaign?"
+    horizon: 90d
+    algorithm: RandomForest
+    aql_port_idiom: "... | fit RandomForest company_sector_match tool_overlap geo_match into 'pte_t3' ; ... | apply pte_t3"
+    metric: top_k_accuracy
+    baselines:
+      - sector_frequency
+    accepted_tiers: [LLM_EXTRACTED]
+    coverage_gated: true
+    conditional: true

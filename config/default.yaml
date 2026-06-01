@@ -1,0 +1,42 @@
+threatstream:
+  base_url: https://api.threatstream.com
+  org_id: 2956
+  rate_limit:
+    requests_per_second: 5
+    burst: 10
+
+llm:
+  backend: bedrock          # bedrock | anthropic; override with LLM_BACKEND env var
+  max_concurrency: 8        # worker pool size; tune after sizing calibration (OQ-6)
+  bedrock:
+    tpm_limit: 100000       # tokens per minute — verify against staging quota
+    rpm_limit: 60
+    region: us-east-1
+    profile: staging
+  anthropic:
+    tpm_limit: 60000
+    rpm_limit: 50
+
+convert:
+  subagent_threshold: 8000  # chars; docs above this may use facet subagents
+  shard_size: 500           # records per extraction shard
+
+dedup:
+  embedding_model: bedrock_titan   # bedrock_titan | local_minilm
+  l3_auto_merge_threshold: 0.95
+  l3_ambiguous_band: [0.82, 0.95]  # pairs in this band -> possible_duplicate
+  l2_fuzzy_threshold: 0.88
+
+eval:
+  holdout_period: 30d       # default hold-out tail for time-based backtest
+  random_seed: 42
+
+ui:
+  min_coverage: 0.10        # below this -> "insufficient coverage" state
+  min_confidence: 0.40      # below this -> "low confidence" warning
+
+ingest:
+  snapshot:
+    max_concurrent_downloads: 3   # Snapshot API limit: 3 concurrent/org
+    chunk_ioc_count: 250000
+    chunk_size_mb: 200

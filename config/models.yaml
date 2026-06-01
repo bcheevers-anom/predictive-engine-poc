@@ -1,0 +1,19 @@
+# Task -> model mapping per backend.
+# Bedrock model IDs confirmed enabled on staging account.
+bedrock:
+  strong: us.anthropic.claude-opus-4-8
+  mid: us.anthropic.claude-sonnet-4-6
+  fast: us.anthropic.claude-haiku-4-5-20251001
+
+anthropic:
+  strong: claude-opus-4-8
+  mid: claude-sonnet-4-6
+  fast: claude-haiku-4-5-20251001
+
+tasks:
+  blob_discovery: strong
+  entity_extraction: strong
+  relationship_parse: fast
+  tag_normalise: fast
+  narrative: mid
+  story_dedup_adjudicator: mid

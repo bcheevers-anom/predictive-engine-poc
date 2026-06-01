@@ -1,0 +1,14 @@
+# Per-feed quirks. Keys match ThreatStream source names.
+feeds:
+  gti:
+    tag_dialect: gti
+    has_campaign_timelines: true
+  mandiant:
+    tag_dialect: mandiant
+    has_actor_associations: true
+  threatfox:
+    tag_dialect: generic
+  crowdstrike:
+    tag_dialect: crowdstrike
+  default:
+    tag_dialect: generic
