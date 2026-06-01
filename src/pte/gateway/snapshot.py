@@ -6,7 +6,7 @@ from pathlib import Path
 import httpx
 
 from pte.common.errors import SnapshotError
-from pte.common.logging import structured_log
+from pte.common.logging import structured_log, progress
 from pte.gateway.threatstream import ThreatStreamClient
 
 
@@ -50,25 +50,44 @@ class SnapshotClient:
             if not snapshot_id:
                 raise SnapshotError(f"No snapshot_id in response: {data}")
             structured_log("snapshot_requested", snapshot_id=snapshot_id)
+            progress(f"Snapshot {snapshot_id} requested - waiting for ThreatStream to build it (typically 5-30 min)")
             return str(snapshot_id)
 
     async def poll_until_complete(self, snapshot_id: str, poll_interval: float = 10.0, timeout: float = 3600.0) -> dict:
         """Poll GET /api/v1/snapshot/<id>/ until status=completed or error."""
         url = f"{self._ts.BASE}/api/v1/snapshot/{snapshot_id}/"
-        deadline = time.monotonic() + timeout
+        start = time.monotonic()
+        deadline = start + timeout
+        poll_count = 0
+        # Report every N polls so the terminal isn't flooded
+        REPORT_EVERY = 6  # every ~60 seconds
         async with self._ts._client() as http:
             while time.monotonic() < deadline:
                 resp = await http.get(url)
                 resp.raise_for_status()
                 data = resp.json()
                 status = data.get("status")
-                structured_log("snapshot_poll", snapshot_id=snapshot_id, status=status)
+                poll_count += 1
+                elapsed_s = int(time.monotonic() - start)
+                remaining_s = int(deadline - time.monotonic())
+                structured_log("snapshot_poll", snapshot_id=snapshot_id, status=status,
+                               elapsed_s=elapsed_s, poll=poll_count)
                 if status == "completed":
                     if data.get("errors"):
                         raise SnapshotError(f"Snapshot errors: {data['errors']}")
+                    progress(f"Snapshot {snapshot_id} completed", elapsed_s=elapsed_s, polls=poll_count)
                     return data
                 if status in ("error", "failed"):
                     raise SnapshotError(f"Snapshot failed: {data}")
+                # Human-readable update every REPORT_EVERY polls
+                if poll_count % REPORT_EVERY == 1 or poll_count == 1:
+                    m, s = divmod(elapsed_s, 60)
+                    rm, rs = divmod(remaining_s, 60)
+                    progress(
+                        f"Snapshot {snapshot_id} still building...",
+                        waited=f"{m}m{s:02d}s",
+                        timeout_in=f"{rm}m{rs:02d}s",
+                    )
                 await asyncio.sleep(poll_interval)
         raise SnapshotError(f"Snapshot {snapshot_id} timed out")
 
@@ -81,25 +100,44 @@ class SnapshotClient:
         dest = Path(dest_dir)
         dest.mkdir(parents=True, exist_ok=True)
         sem = asyncio.Semaphore(self.MAX_CONCURRENT)
+        n_chunks = len(chunks)
+        progress(f"Downloading {n_chunks} chunk(s) to {dest_dir}")
 
-        async def download_one(chunk: dict) -> str:
+        async def download_one(chunk: dict, idx: int) -> str:
             url = chunk.get("download_url") or chunk.get("url")
             if not url:
                 raise SnapshotError(f"No download URL in chunk: {chunk}")
-            fname = dest / f"chunk_{chunk.get('id', 'single')}.jsonl"
+            chunk_id = chunk.get("id", "single")
+            fname = dest / f"chunk_{chunk_id}.jsonl"
+            dl_start = time.monotonic()
+            bytes_written = 0
             async with sem:
+                progress(f"  chunk {idx+1}/{n_chunks} starting download", chunk_id=chunk_id)
                 async with httpx.AsyncClient(timeout=300.0) as http:
                     async with http.stream("GET", url) as resp:
                         resp.raise_for_status()
+                        total = int(resp.headers.get("content-length", 0))
                         with open(fname, "wb") as f:
-                            async for data in resp.aiter_bytes(65536):
-                                f.write(data)
+                            async for block in resp.aiter_bytes(65536):
+                                f.write(block)
+                                bytes_written += len(block)
 
+            elapsed = time.monotonic() - dl_start
+            mb = bytes_written / 1_048_576
+            speed = mb / elapsed if elapsed > 0 else 0
             expected_sha = chunk.get("sha256sum") or chunk.get("sha256")
-            if expected_sha and not verify_sha256(str(fname), expected_sha):
-                raise SnapshotError(f"SHA-256 mismatch for chunk {chunk.get('id')}")
-            structured_log("chunk_downloaded", path=str(fname))
+            if expected_sha:
+                progress(f"  chunk {idx+1}/{n_chunks} verifying SHA-256…")
+                if not verify_sha256(str(fname), expected_sha):
+                    raise SnapshotError(f"SHA-256 mismatch for chunk {chunk_id}")
+            structured_log("chunk_downloaded", path=str(fname), bytes=bytes_written)
+            progress(
+                f"  chunk {idx+1}/{n_chunks} done",
+                size=f"{mb:.1f} MB",
+                speed=f"{speed:.1f} MB/s",
+                sha256="ok" if expected_sha else "n/a",
+            )
             return str(fname)
 
-        paths = await asyncio.gather(*[download_one(c) for c in chunks])
+        paths = await asyncio.gather(*[download_one(c, i) for i, c in enumerate(chunks)])
         return list(paths)

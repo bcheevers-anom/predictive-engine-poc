@@ -3,7 +3,7 @@ from typing import AsyncIterator
 import httpx
 
 from pte.common.errors import CursorDriftError, RateLimitError
-from pte.common.logging import structured_log
+from pte.common.logging import structured_log, progress
 
 
 class ThreatStreamClient:
@@ -48,15 +48,23 @@ class ThreatStreamClient:
         url = f"{self.BASE}/api/v1/threat_model_search/"
         query = {**(params or {}), "model_type": model_type, "limit": 1000}
         results = []
+        page = 0
         async with self._client() as http:
             while True:
                 resp = await http.get(url, params=query)
                 resp.raise_for_status()
                 data = resp.json()
-                results.extend(data.get("objects", []))
+                batch = data.get("objects", [])
+                results.extend(batch)
+                page += 1
+                total = (data.get("meta") or {}).get("total_count", "?")
+                if page == 1:
+                    progress(f"Fetching {model_type} list", total=total)
                 if not data.get("meta", {}).get("next"):
                     break
                 query["offset"] = query.get("offset", 0) + 1000
+                progress(f"  {model_type} list page {page}", fetched=len(results), total=total)
+        progress(f"  {model_type} list complete", count=len(results))
         return results
 
     async def get_entity_full(self, model_type: str, entity_id: int | str) -> dict:
@@ -76,4 +84,6 @@ class ThreatStreamClient:
             resp = await http.get(url, params={"model_type": model_type, "limit": 1, "full_count": 1})
             resp.raise_for_status()
             data = resp.json()
-            return data.get("meta", {}).get("total_count", 0)
+            count = data.get("meta", {}).get("total_count", 0)
+            progress(f"  {model_type} count", total=count)
+            return count

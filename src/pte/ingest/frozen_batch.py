@@ -3,7 +3,7 @@ import json
 from pathlib import Path
 
 from pte.common.provenance import make_run_id, config_hash
-from pte.common.logging import structured_log
+from pte.common.logging import structured_log, progress
 from pte.gateway.snapshot import SnapshotClient
 from pte.gateway.threatstream import ThreatStreamClient
 from pte.ingest.raw_store import RawStore
@@ -33,30 +33,40 @@ class FrozenBatchRunner:
         cfg = {"from": from_date, "to": to_date, "feeds": feeds}
         batch_id = f"{run_id[:8]}-{config_hash(cfg)}"
         structured_log("batch_start", batch_id=batch_id, from_date=from_date, to_date=to_date)
+        progress("=== PTE Ingest ===", batch_id=batch_id, from_date=from_date, to_date=to_date)
 
         # 1. Sizing calibration
+        progress("Step 1/4  Sizing calibration (true counts via full_count=1)…")
         sizing = {}
         for mtype in ["actor", "campaign", "malware", "tool", "vulnerability"]:
             count = await self._ts.get_full_count(mtype)
             sizing[f"{mtype}_count"] = count
         self._store.write_sizing(batch_id, sizing)
+        total_entities = sum(sizing.values())
+        progress("  Sizing done", **{k: f"{v:,}" for k, v in sizing.items()})
 
         # 2. Snapshot
+        progress("Step 2/4  Requesting snapshot from ThreatStream…")
         snapshot_dir = str(self._data_dir / "snapshots" / batch_id)
         snapshot_id = await self._snapshot.request_snapshot(fmt=fmt)
         snapshot_data = await self._snapshot.poll_until_complete(snapshot_id)
         chunk_paths = await self._snapshot.download_chunks(snapshot_data, snapshot_dir)
 
         # 3. Parse and store with L1 dedup
+        progress("Step 3/4  Parsing snapshot and running L1 dedup…")
         all_observables = []
         for chunk_path in chunk_paths:
             records = _parse_jsonl(chunk_path)
             all_observables.extend(records)
+            progress(f"  Parsed {chunk_path}", records=f"{len(records):,}")
 
         deduped = l1_dedup_batch(all_observables)
+        dupes = len(all_observables) - len(deduped)
+        progress("  L1 dedup complete", raw=f"{len(all_observables):,}", unique=f"{len(deduped):,}", dupes_removed=f"{dupes:,}")
         self._store.write_bulk(batch_id, "observable", deduped)
 
         # 4. Write frozen corpus manifest
+        progress("Step 4/4  Writing manifest…")
         manifest = {
             "batch_id": batch_id,
             "run_id": run_id,
@@ -71,6 +81,8 @@ class FrozenBatchRunner:
         frozen_dir.mkdir(parents=True, exist_ok=True)
         (frozen_dir / "manifest.json").write_text(json.dumps(manifest, indent=2))
         structured_log("batch_complete", batch_id=batch_id, manifest=manifest)
+        progress("=== Batch complete ===", batch_id=batch_id,
+                 observables=f"{len(deduped):,}", snapshot_id=snapshot_id)
         return batch_id
 
 
