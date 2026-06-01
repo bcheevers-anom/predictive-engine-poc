@@ -1,0 +1,11 @@
+{
+  "id": "obs-threatfox-210168011",
+  "itype": "ip",
+  "value": "210.16.168.11",
+  "source": "threatfox",
+  "confidence": 60,
+  "status": "active",
+  "detail2": "c2_server",
+  "tags": [{"name": "Cobalt Strike"}, {"name": "c2"}],
+  "created_ts": "2025-04-10T00:00:00"
+}

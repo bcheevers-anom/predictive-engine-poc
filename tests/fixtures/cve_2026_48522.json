@@ -1,0 +1,15 @@
+{
+  "id": "vuln-cve-2026-48522",
+  "entity_type": "vulnerability",
+  "itype": "cve",
+  "value": "CVE-2026-48522",
+  "source": "nvd",
+  "confidence": 90,
+  "cvss_score": 9.1,
+  "cvss_vector": "AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:N",
+  "epss_score": 0.043,
+  "status": "active",
+  "tags": [{"name": "RCE"}, {"name": "remote_code_execution"}],
+  "created_ts": "2026-01-20T00:00:00",
+  "description": "Remote code execution vulnerability in widely-deployed enterprise VPN software. Actively exploited in the wild by APT actors targeting critical infrastructure."
+}

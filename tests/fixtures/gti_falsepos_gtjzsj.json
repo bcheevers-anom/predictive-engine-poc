@@ -1,0 +1,10 @@
+{
+  "id": "obs-gti-gtjzsj001",
+  "itype": "domain",
+  "value": "gtjzsj.com",
+  "source": "gti",
+  "confidence": 20,
+  "status": "falsepos",
+  "tags": [{"name": "false_positive"}],
+  "created_ts": "2025-03-01T00:00:00"
+}

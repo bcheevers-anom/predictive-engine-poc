@@ -1,0 +1,13 @@
+{
+  "id": "obs-eventostotales-001",
+  "itype": "domain",
+  "value": "eventostotales.com",
+  "source": "crowdstrike",
+  "confidence": 75,
+  "status": "active",
+  "tags": [{"name": "phishing"}, {"name": "TA0001 Initial Access"}],
+  "created_ts": "2025-06-15T12:00:00",
+  "modified_ts": "2025-08-01T08:00:00",
+  "first_seen": "2025-06-15",
+  "last_seen": "2025-12-01"
+}
