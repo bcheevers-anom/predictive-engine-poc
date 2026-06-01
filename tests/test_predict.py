@@ -51,3 +51,26 @@ def test_t1_fits_and_predicts(tmp_path):
 
 def test_t1_aql_port_idiom_recorded():
     assert "LogisticRegression" in T1VulnExploit.aql_port_idiom or "RandomForest" in T1VulnExploit.aql_port_idiom
+
+from pte.predict.t2_industry import T2Industry
+
+def test_t2_industry_produces_ranked_forecast(tmp_path):
+    from pte.features.store import FeatureStore
+    store = FeatureStore(base_dir=str(tmp_path / "features"))
+    records = [
+        {"entity_id": f"e{i}", "industry": "Oil and Gas", "tool": "Cobalt Strike", "tactic": "Lateral Movement", "corroboration_score": 0.5, "tier": "LLM_EXTRACTED"}
+        for i in range(30)
+    ] + [
+        {"entity_id": f"f{i}", "industry": "Finance", "tool": "Mimikatz", "tactic": "Credential Access", "corroboration_score": 0.4, "tier": "LLM_EXTRACTED"}
+        for i in range(10)
+    ]
+    store.write("batch001", "industry_tool_cooccur", records)
+
+    t2 = T2Industry(batch_id="batch001", data_dir=str(tmp_path))
+    t2.fit()
+    report = t2.evaluate()
+    assert "top_k_accuracy" in report
+    assert report.get("coverage_reported") is True
+
+def test_t2_industry_aql_port_idiom():
+    assert "RandomForest" in T2Industry.aql_port_idiom
