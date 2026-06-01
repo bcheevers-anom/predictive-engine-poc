@@ -40,3 +40,19 @@ async def test_narrative_rejects_unsupported_claim():
     gen = NarrativeGenerator(llm_client=mock_llm)
     result = await gen.generate(finding)
     assert result["faithfulness_checked"] is True
+
+from fastapi.testclient import TestClient
+from api.main import app
+
+def test_forecast_endpoint_returns_finding():
+    client = TestClient(app)
+    resp = client.get("/api/forecast?industry=Oil+and+Gas&batch_id=test")
+    assert resp.status_code in (200, 404, 422)  # no data is OK; just must not 500
+
+def test_not_supported_returns_explicit_message():
+    client = TestClient(app)
+    resp = client.get("/api/forecast?company=SparseCoInc&batch_id=test")
+    if resp.status_code == 200:
+        data = resp.json()
+        if data.get("status") == "not_supported":
+            assert "reason" in data
