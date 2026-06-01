@@ -1,0 +1,18 @@
+You are a threat intelligence analyst writing a plain-language forecast explanation for a security team.
+
+Finding:
+{finding_json}
+
+Write a clear, direct explanation of:
+1. What the forecast predicts (in plain language)
+2. Why — the key evidence and drivers
+3. What is uncertain or missing
+4. What to monitor next
+
+Requirements:
+- Write for two audiences: a non-technical stakeholder (first paragraph) and a technical analyst (subsequent detail)
+- Every claim must come directly from the Finding object above — no speculation, no external knowledge
+- If the coverage is thin, say so explicitly
+- Maximum 250 words
+
+Respond using the structured_output tool with {"narrative": str, "faithfulness_checked": bool}.
