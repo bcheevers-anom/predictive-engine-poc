@@ -91,3 +91,91 @@ async def test_discovery_emits_coverage_report(tmp_path):
     assert "dimensions" in data
     assert data["sample_size"] == 10
     assert 0.0 <= data["dimensions"]["industry"]["presence_rate"] <= 1.0
+
+
+# Task 15: Entity Extraction tests
+from pte.convert.extraction import ExtractionRunner
+from pte.schema.models import PTEEntity as PTEEntityModel
+
+@pytest.mark.asyncio
+async def test_extraction_returns_valid_entity(tmp_path):
+    mock_llm = AsyncMock()
+    mock_llm.complete.return_value = PTEEntityModel(
+        entity_id="campaign-001",
+        entity_type="campaign",
+        source_feed="gti",
+        industry=["Oil and Gas"],
+        tool="Cobalt Strike",
+        tactic="TA0008 Lateral Movement",
+        technique="T1021.002",
+        llm_extraction_confidence=0.72,
+        validation_status="ok",
+    )
+    runner = ExtractionRunner(
+        llm_client=mock_llm,
+        data_dir=str(tmp_path),
+        batch_id="b001",
+        run_id="r001",
+    )
+    entity = await runner.extract_one({
+        "id": "campaign-001",
+        "entity_type": "campaign",
+        "source_feed": "gti",
+        "description": "Campaign targeting Oil and Gas using Cobalt Strike.",
+    })
+    assert entity.industry == ["Oil and Gas"]
+    assert "Cobalt Strike" in entity.tool
+    assert entity.validation_status == "ok"
+
+@pytest.mark.asyncio
+async def test_extraction_quarantines_on_failure(tmp_path):
+    mock_llm = AsyncMock()
+    mock_llm.complete.side_effect = Exception("LLM timeout")
+    runner = ExtractionRunner(
+        llm_client=mock_llm,
+        data_dir=str(tmp_path),
+        batch_id="b001",
+        run_id="r001",
+    )
+    entity = await runner.extract_one({"id": "bad-001", "entity_type": "campaign", "source_feed": "gti", "description": ""})
+    assert entity is None
+    assert runner.quarantine.count() == 1
+
+
+# Task 16: Tier-2 Parser tests
+from pte.convert.tier2_parsers.gti_campaign_timeline import parse_gti_campaign_timeline
+from pte.convert.tier2_parsers.mandiant_actor_assoc import parse_mandiant_actor_assoc
+from pte.schema.models import SRO
+
+GTI_HTML_FIXTURE = """
+<div class="timeline">
+  <div class="event">
+    <span class="date">2025-03-15</span>
+    <p>Actors used T1021.002 (SMB/Windows Admin Shares) to move laterally.
+    C2 at 192.168.1[.]100. Target: energy sector.</p>
+  </div>
+</div>
+"""
+
+MANDIANT_HTML_FIXTURE = """
+<table>
+  <tr><th>Actor</th><th>Relationship</th><th>Target</th><th>Attribution</th></tr>
+  <tr><td>APT29</td><td>targets</td><td>identity--abc123</td><td>direct</td></tr>
+</table>
+"""
+
+def test_gti_timeline_parses_date():
+    events = parse_gti_campaign_timeline(GTI_HTML_FIXTURE, entity_id="campaign-1", run_id="r1")
+    assert len(events) >= 1
+    assert events[0].get("event_date") == "2025-03-15"
+
+def test_gti_timeline_refangs_ioc():
+    events = parse_gti_campaign_timeline(GTI_HTML_FIXTURE, entity_id="campaign-1", run_id="r1")
+    iocs = [e.get("ioc") for e in events if e.get("ioc")]
+    assert any("192.168.1.100" in str(ioc) for ioc in iocs)
+
+def test_mandiant_actor_parses_sro():
+    sros = parse_mandiant_actor_assoc(MANDIANT_HTML_FIXTURE, entity_id="actor-1", run_id="r1")
+    assert len(sros) >= 1
+    assert any(s.relationship_type == "targets" for s in sros)
+    assert any(s.attribution_scope == "direct" for s in sros)
