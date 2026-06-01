@@ -29,9 +29,19 @@ class SnapshotClient:
         fmt: str = "json_v2",
         chunk_ioc_count: int = 250000,
     ) -> str:
-        """POST /api/v1/snapshot/ and return snapshot_id."""
+        """POST /api/v1/snapshot/ and return snapshot_id.
+
+        The format parameter is sent as a hint but some org configurations
+        ignore it and produce a custom export format instead — that is fine,
+        the download_chunks method handles both JSON arrays and JSONL.
+        """
         url = f"{self._ts.BASE}/api/v1/snapshot/"
-        payload = {"format": fmt, "chunk_ioc_count": chunk_ioc_count}
+        # Send minimal payload; omit format if default — some orgs reject unknown values
+        payload: dict = {}
+        if fmt and fmt != "json_v2":
+            payload["format"] = fmt
+        if chunk_ioc_count != 250000:
+            payload["chunk_ioc_count"] = chunk_ioc_count
         async with self._ts._client() as http:
             resp = await http.post(url, json=payload)
             resp.raise_for_status()

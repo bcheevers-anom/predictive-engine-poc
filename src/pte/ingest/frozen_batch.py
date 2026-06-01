@@ -75,13 +75,25 @@ class FrozenBatchRunner:
 
 
 def _parse_jsonl(path: str) -> list[dict]:
+    """Parse a file that is either a JSON array or newline-delimited JSON."""
+    with open(path, encoding="utf-8", errors="replace") as f:
+        content = f.read().strip()
+    if not content:
+        return []
+    # JSON array format (ThreatStream custom export)
+    if content.startswith("["):
+        try:
+            data = json.loads(content)
+            return data if isinstance(data, list) else []
+        except json.JSONDecodeError:
+            pass
+    # JSONL format — one record per line
     records = []
-    with open(path) as f:
-        for line in f:
-            line = line.strip()
-            if line:
-                try:
-                    records.append(json.loads(line))
-                except json.JSONDecodeError:
-                    pass
+    for line in content.splitlines():
+        line = line.strip()
+        if line:
+            try:
+                records.append(json.loads(line))
+            except json.JSONDecodeError:
+                pass
     return records

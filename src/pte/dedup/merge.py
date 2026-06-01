@@ -7,8 +7,9 @@ def build_canonical_record(records: list[dict], dedup_level: str = "L1", dedup_c
         raise ValueError("Cannot build canonical from empty list")
     if len(records) == 1:
         r = dict(records[0])
+        rec_id = r.get("id") or r.get("value", "unknown")
         r.setdefault("dedup_status", "singleton")
-        r.setdefault("merged_from", [r["id"]])
+        r.setdefault("merged_from", [rec_id])
         r.setdefault("source_feed_count", 1)
         r.setdefault("distinct_event_count", 1)
         r.setdefault("corroboration_score", 0.0)
@@ -17,8 +18,9 @@ def build_canonical_record(records: list[dict], dedup_level: str = "L1", dedup_c
     # Use the record with the highest source_confidence as the base
     base = sorted(records, key=lambda r: r.get("source_confidence") or 0, reverse=True)[0]
     canonical = dict(base)
-    canonical["canonical_id"] = f"canonical-{canonical['id']}"
-    canonical["merged_from"] = [r["id"] for r in records]
+    base_id = canonical.get("id") or canonical.get("value", "unknown")
+    canonical["canonical_id"] = f"canonical-{base_id}"
+    canonical["merged_from"] = [r.get("id") or r.get("value", "unknown") for r in records]
     canonical["source_feed_count"] = len({r.get("source_feed", "") for r in records})
     canonical["distinct_event_count"] = len(records)
     canonical["dedup_status"] = "merged"
