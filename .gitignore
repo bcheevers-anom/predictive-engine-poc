@@ -1,0 +1,11 @@
+.env
+creds.txt
+data/
+*.pyc
+__pycache__/
+.venv/
+*.egg-info/
+dist/
+.pytest_cache/
+node_modules/
+web/dist/
