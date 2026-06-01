@@ -1,7 +1,9 @@
 import pytest
+from unittest.mock import AsyncMock, MagicMock
 from pte.dedup.l1_observable import l1_dedup_batch, normalise_observable_key
 from pte.dedup.merge import build_canonical_record
 from pte.dedup.l2_entity import l2_entity_resolution
+from pte.dedup.l3_story import l3_story_cluster
 
 def test_l1_dedup_collapses_same_ip():
     records = [
@@ -47,3 +49,29 @@ def test_l2_unknown_alias_goes_to_unmapped():
     result = l2_entity_resolution(entities)
     assert len(result) == 1
     assert result[0]["dedup_status"] == "singleton"
+
+
+@pytest.mark.asyncio
+async def test_l3_merges_high_confidence_pair():
+    mock_llm = AsyncMock()
+    mock_llm.complete.return_value = MagicMock(same_event=True, confidence=0.97, rationale="Same IOCs and dates", shared_anchors=["185.220.101.45"])
+
+    records = [
+        {"id": "s1", "title": "APT29 Oil Gas Norway Q3", "description": "Norway oil and gas breach Sept 2025", "source_feed": "gti"},
+        {"id": "s2", "title": "Cozy Bear Norway Campaign", "description": "Norway energy sector intrusion September 2025", "source_feed": "mandiant"},
+    ]
+    result = await l3_story_cluster(records, llm_client=mock_llm)
+    assert len(result) < 2
+
+
+@pytest.mark.asyncio
+async def test_l3_marks_ambiguous_as_possible_duplicate():
+    mock_llm = AsyncMock()
+    mock_llm.complete.return_value = MagicMock(same_event=True, confidence=0.87, rationale="Similar but uncertain", shared_anchors=[])
+
+    records = [
+        {"id": "s1", "title": "APT29 Campaign A", "description": "First campaign description", "source_feed": "gti"},
+        {"id": "s2", "title": "APT29 Campaign B", "description": "Second campaign description", "source_feed": "mandiant"},
+    ]
+    result = await l3_story_cluster(records, llm_client=mock_llm)
+    assert any(r.get("dedup_status") == "possible_duplicate" for r in result)
