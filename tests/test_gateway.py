@@ -53,3 +53,14 @@ def test_llm_client_fails_fast_without_session(monkeypatch):
         client = LLMClient()
         with pytest.raises(AuthError):
             asyncio.run(client.complete(prompt="test", model_tier="fast"))
+
+
+@pytest.mark.asyncio
+async def test_read_only_guard():
+    """Client must not expose any write methods."""
+    from pte.gateway.threatstream import ThreatStreamClient
+    client = ThreatStreamClient(api_user="test@test.com", api_key="key")
+    assert not hasattr(client, "patch")
+    assert not hasattr(client, "put")
+    assert not hasattr(client, "delete")
+    assert not hasattr(client, "post_intelligence")
