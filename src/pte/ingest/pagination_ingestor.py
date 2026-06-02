@@ -34,37 +34,84 @@ class PaginationIngestor:
         self._store = store
         self._data_dir = data_dir
 
-    async def run(self, batch_id: str, from_date: str, to_date: str) -> dict:
-        """Fetch all data and write to the raw store. Returns stats dict."""
-        obs_stats = await self._fetch_observables(batch_id, from_date, to_date)
+    async def run(
+        self,
+        batch_id: str,
+        from_date: str,
+        to_date: str,
+        max_observables: int | None = None,
+    ) -> dict:
+        """Fetch all data and write to the raw store. Returns stats dict.
+
+        max_observables: if set, stop pulling observables after this many records.
+        Pages are checkpointed to disk every 50 pages so a crash doesn't lose work.
+        """
+        obs_stats = await self._fetch_observables(batch_id, from_date, to_date, max_observables)
         await self._fetch_entities(batch_id, from_date, to_date)
         return obs_stats
 
-    async def _fetch_observables(self, batch_id: str, from_date: str, to_date: str) -> dict:
-        progress("Step 2/4  Fetching observables via cursor pagination...")
+    async def _fetch_observables(
+        self,
+        batch_id: str,
+        from_date: str,
+        to_date: str,
+        max_observables: int | None = None,
+    ) -> dict:
+        cap_msg = f" (capped at {max_observables:,})" if max_observables else ""
+        progress(f"Step 2/4  Fetching observables via cursor pagination{cap_msg}...")
         params = {
             "created_ts__gte": from_date,
             "created_ts__lte": to_date,
             "status": "active",
         }
+
+        CHECKPOINT_EVERY = 50  # flush to disk every 50 pages = 50k records
         all_records: list[dict] = []
+        checkpoint_buffer: list[dict] = []
         page = 0
+        total_written = 0
+        capped = False
+
         async for records in self._ts.iter_observables(params=params, limit=1000):
             all_records.extend(records)
+            checkpoint_buffer.extend(records)
             page += 1
+
+            # Checkpoint to disk periodically so progress is never fully lost
+            if page % CHECKPOINT_EVERY == 0:
+                deduped_chunk = l1_dedup_batch(checkpoint_buffer)
+                self._store.write_bulk(batch_id, f"observable_chunk_{page}", deduped_chunk)
+                total_written += len(deduped_chunk)
+                checkpoint_buffer = []
+                progress(f"  checkpoint written", pages=page,
+                         fetched=f"{len(all_records):,}", on_disk=f"{total_written:,}")
+
             if page % 5 == 0 or page == 1:
                 progress(f"  observables page {page}", fetched=f"{len(all_records):,}")
 
-        progress("Step 3/4  Running L1 dedup on observables...")
+            if max_observables and len(all_records) >= max_observables:
+                progress(f"  cap of {max_observables:,} reached — stopping observable pull")
+                capped = True
+                break
+
+        # Write any remaining buffer
+        if checkpoint_buffer:
+            deduped_chunk = l1_dedup_batch(checkpoint_buffer)
+            self._store.write_bulk(batch_id, f"observable_chunk_{page}", deduped_chunk)
+            total_written += len(deduped_chunk)
+
+        # Consolidate all chunks into one final bulk parquet
+        progress("Step 3/4  Consolidating and running final L1 dedup...")
         deduped = l1_dedup_batch(all_records)
         dupes = len(all_records) - len(deduped)
         progress("  L1 dedup complete",
                  raw=f"{len(all_records):,}",
                  unique=f"{len(deduped):,}",
-                 dupes_removed=f"{dupes:,}")
+                 dupes_removed=f"{dupes:,}",
+                 capped=capped)
         self._store.write_bulk(batch_id, "observable", deduped)
         structured_log("pagination_observables_complete",
-                       total_raw=len(all_records), total_deduplicated=len(deduped))
+                       total_raw=len(all_records), total_deduplicated=len(deduped), capped=capped)
         return {"total_raw": len(all_records), "total_deduplicated": len(deduped)}
 
     async def _fetch_entities(self, batch_id: str, from_date: str, to_date: str) -> None:

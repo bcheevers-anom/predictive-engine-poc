@@ -31,7 +31,13 @@ def main():
     help="Path to directory containing data-team export files. Only used with --method db-file. Defaults to data/db_export/.",
 )
 @click.option("--format", "fmt", default="json_v2", hidden=True)
-def ingest(from_date, to_date, feeds, method, db_export_dir, fmt):
+@click.option(
+    "--max-observables",
+    default=None,
+    type=int,
+    help="Cap observable pull at this many records. Pages checkpoint to disk every 50k. Pagination method only.",
+)
+def ingest(from_date, to_date, feeds, method, db_export_dir, fmt, max_observables):
     """Pull ThreatStream data into a frozen corpus.
 
     Three methods are available:\n
@@ -92,7 +98,8 @@ def ingest(from_date, to_date, feeds, method, db_export_dir, fmt):
         runner = FrozenBatchRunner(ts_client=ts)
         batch_id = asyncio.run(
             runner.run(from_date=from_date, to_date=to_date,
-                       feeds=feed_list, fmt=fmt, method=method)
+                       feeds=feed_list, fmt=fmt, method=method,
+                       max_observables=max_observables)
         )
         click.echo(f"Batch complete: {batch_id}")
 

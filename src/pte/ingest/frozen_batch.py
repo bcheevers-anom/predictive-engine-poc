@@ -66,6 +66,7 @@ class FrozenBatchRunner:
         feeds: list[str] | None = None,
         fmt: str = "json_v2",
         method: str = "pagination",
+        max_observables: int | None = None,
     ) -> str:
         run_id = make_run_id()
         cfg = {"from": from_date, "to": to_date, "feeds": feeds, "method": method}
@@ -91,7 +92,7 @@ class FrozenBatchRunner:
         elif method == "pagination":
             from pte.ingest.pagination_ingestor import PaginationIngestor
             ingestor = PaginationIngestor(self._ts, self._store, self._data_dir)
-            stats = await ingestor.run(batch_id, from_date, to_date)
+            stats = await ingestor.run(batch_id, from_date, to_date, max_observables=max_observables)
         elif method == "db-file":
             from pte.ingest.db_file_ingestor import DatabaseFileIngestor
             ingestor = DatabaseFileIngestor(self._store, self._data_dir)
