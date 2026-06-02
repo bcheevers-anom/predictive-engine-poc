@@ -117,11 +117,23 @@ cd ..
 
 ```bash
 # 1. Ingest — pull a frozen snapshot corpus
-pte ingest --from 2026-05-01 --to 2026-06-01
+# Choose your ingest method:
 
-# The command prints the batch_id on completion, e.g.:
+# Method A — REST pagination (recommended, always works)
+pte ingest --from 2026-05-01 --to 2026-06-01 --method pagination
+
+# Method B — Snapshot (faster if it completes, but may time out for some orgs)
+pte ingest --from 2026-05-01 --to 2026-06-01 --method snapshot
+
+# Method C — Data-team file drop (when API is unavailable)
+#   1. Place files from the data team in data/db_export/:
+#      observables.jsonl, campaigns.jsonl, actors.jsonl,
+#      malware.jsonl, vulnerabilities.jsonl, attack_patterns.jsonl
+#   2. Then run:
+pte ingest --from 2026-05-01 --to 2026-06-01 --method db-file
+
+# Each method prints the batch_id on completion, e.g.:
 # Batch complete: a1b2c3d4-f5e6g7h8
-# Use that ID in every subsequent command.
 export BATCH=<your-batch-id>
 
 # 2. Discovery pass — understand what signal exists in the blobs
@@ -168,6 +180,18 @@ To change it:
 eval:
   holdout_period: 7d   # 1 week held out
 ```
+
+---
+
+## Ingest methods
+
+| Method | Command | When to use | Requires live API |
+|---|---|---|---|
+| `pagination` | `--method pagination` | Default. Cursor-paginated REST — reliable, no timeout risk, ~30s for a typical corpus | Yes |
+| `snapshot` | `--method snapshot` | Bulk Snapshot API — faster for very large corpora if ThreatStream builds it in time. May time out (>60 min) for some org configurations | Yes |
+| `db-file` | `--method db-file` | Data team has supplied export files. No API connection needed for the ingest step | No |
+
+For `db-file`: place the files in `data/db_export/` (or specify `--db-export-dir <path>`). See `docs/data_request_threatstream_export.md` for the exact files and fields to request from the data team.
 
 ---
 
