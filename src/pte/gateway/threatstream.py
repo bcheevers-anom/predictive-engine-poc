@@ -17,19 +17,35 @@ class ThreatStreamClient:
         self._headers = {"Authorization": f"apikey {self._user}:{self._key}"}
 
     def _client(self) -> httpx.AsyncClient:
-        return httpx.AsyncClient(headers=self._headers, timeout=30.0)
+        return httpx.AsyncClient(headers=self._headers, timeout=60.0)
 
     async def iter_observables(
         self,
         params: dict | None = None,
         limit: int = 1000,
+        max_retries: int = 3,
     ) -> AsyncIterator[list]:
-        """Cursor-paginate /api/v2/intelligence/. Yields pages (lists of objects)."""
+        """Cursor-paginate /api/v2/intelligence/. Yields pages (lists of objects).
+
+        Retries transient ReadTimeout / ConnectError up to max_retries times
+        before giving up, so a single slow server response doesn't abort a
+        multi-hour pull.
+        """
+        import asyncio as _asyncio
         url = f"{self.BASE}/api/v2/intelligence/"
         query = {**(params or {}), "limit": limit, "order_by": "created_ts,id"}
         async with self._client() as http:
             while url:
-                resp = await http.get(url, params=query)
+                for attempt in range(1, max_retries + 1):
+                    try:
+                        resp = await http.get(url, params=query)
+                        break
+                    except (httpx.ReadTimeout, httpx.ConnectError) as exc:
+                        if attempt == max_retries:
+                            raise
+                        wait = attempt * 5
+                        progress(f"  ReadTimeout on page — retrying in {wait}s (attempt {attempt}/{max_retries})")
+                        await _asyncio.sleep(wait)
                 if resp.status_code == 429:
                     raise RateLimitError(backend="threatstream")
                 resp.raise_for_status()
