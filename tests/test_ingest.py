@@ -169,3 +169,24 @@ async def test_db_file_ingestor_missing_dir_raises(tmp_path):
     ingestor = DatabaseFileIngestor(store, tmp_path, db_export_dir=str(tmp_path / "nonexistent"))
     with pytest.raises(FileNotFoundError):
         await ingestor.run("batch001", "2026-05-01", "2026-06-01")
+
+
+from click.testing import CliRunner
+from pte.cli import main
+
+def test_cli_ingest_method_flag_in_help():
+    runner = CliRunner()
+    result = runner.invoke(main, ["ingest", "--help"])
+    assert result.exit_code == 0
+    assert "--method" in result.output
+    assert "pagination" in result.output
+    assert "snapshot" in result.output
+    assert "db-file" in result.output
+
+def test_cli_ingest_rejects_unknown_method():
+    runner = CliRunner()
+    result = runner.invoke(main, [
+        "ingest", "--from", "2026-05-01", "--to", "2026-06-01",
+        "--method", "telepathy"
+    ])
+    assert result.exit_code != 0
