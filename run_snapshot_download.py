@@ -177,25 +177,41 @@ async def process_chunks(chunk_paths: list[str], batch_id: str) -> int:
         store.write_bulk(batch_id, f"snapshot_chunk_{chunk_idx:04d}", deduped_chunk)
         chunk_idx += 1
 
-    # Consolidate all snapshot parquet chunks into one final observable parquet
-    progress(f"  Consolidating {chunk_idx} parquet chunks into final observable table...")
-    from pte.ingest.raw_store import RawStore as _RS
+    # Consolidate all snapshot parquet chunks using DuckDB — handles data larger than RAM
+    progress(f"  Consolidating {chunk_idx} parquet chunks using DuckDB (out-of-core dedup)...")
+    import duckdb
     raw_dir = DATA_DIR / "raw" / batch_id
-    all_unique: list[dict] = []
-    for pq_chunk in sorted(raw_dir.glob("snapshot_chunk_*/bulk.parquet")):
-        import pyarrow.parquet as pq
-        rows = pq.read_table(str(pq_chunk)).to_pylist()
-        all_unique.extend(rows)
+    chunk_pattern = str(raw_dir / "snapshot_chunk_*/bulk.parquet")
 
-    # Final cross-chunk dedup (small — only ~5M records by now)
-    from pte.dedup.l1_observable import l1_dedup_batch
-    final = l1_dedup_batch(all_unique)
-    dupes = total_raw - len(final)
-    progress(f"  Final dedup: {total_raw:,} raw -> {len(final):,} unique ({dupes:,} dupes removed)")
+    dest_parquet = str(raw_dir / "observable" / "bulk.parquet")
+    Path(dest_parquet).parent.mkdir(parents=True, exist_ok=True)
 
-    store.write_bulk(batch_id, "observable", final)
-    structured_log("snapshot_observables_stored", total_raw=total_raw, total_deduplicated=len(final))
-    return len(final)
+    # DuckDB: read all chunks, dedup by (value, itype), keep highest-confidence record, write parquet
+    # This runs entirely out-of-core — no Python RAM spike
+    con = duckdb.connect()
+    con.execute(f"""
+        COPY (
+            SELECT * EXCLUDE(rn)
+            FROM (
+                SELECT *,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY value, itype
+                           ORDER BY COALESCE(confidence, 0) DESC
+                       ) AS rn
+                FROM read_parquet('{chunk_pattern}')
+                WHERE value IS NOT NULL AND value != ''
+                  AND itype IS NOT NULL AND itype != ''
+            )
+            WHERE rn = 1
+        ) TO '{dest_parquet}' (FORMAT PARQUET, COMPRESSION SNAPPY)
+    """)
+    result = con.execute(f"SELECT COUNT(*) FROM read_parquet('{dest_parquet}')").fetchone()
+    final_count = result[0] if result else 0
+    con.close()
+
+    progress(f"  DuckDB dedup complete: {final_count:,} unique records written to {dest_parquet}")
+    structured_log("snapshot_observables_stored", total_raw=total_raw, total_deduplicated=final_count)
+    return final_count
 
 async def main():
     progress("=" * 60)
