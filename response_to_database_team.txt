@@ -1,0 +1,81 @@
+Hi team,
+
+Thanks for pointing us to the snapshot API — we appreciate the quick response.
+
+We've done thorough testing and hit a few blockers we'd like your help with. Let me explain what we're trying to build and what we're seeing, so you can point us in the right direction.
+
+---
+
+WHAT WE'RE BUILDING
+
+We're building a Predictive Threat Engine that trains machine learning models to forecast sector-level threat activity (e.g. "which malware tools are most likely to target Financial Services next quarter?"). To do this we need a labelled training corpus covering roughly the last 2.5 years (2024-01-01 to today):
+
+  - Threat model entities: actors, campaigns, malware families, vulnerabilities
+  - Their structured metadata (CVSS scores, EPSS scores, tags, activity dates)
+  - Their description bodies (HTML narratives that our LLM extraction layer parses for industry/tool/tactic signal)
+  - A date range we control, so we can do time-based train/holdout splits for evaluation
+
+---
+
+WHAT WE'VE TRIED AND WHAT'S HAPPENING
+
+1. Custom snapshot POST with no body:
+
+   POST /api/v1/snapshot/
+   → Created (201), snapshot_id = 8551509
+   → Status: still "inprogress" after hours, never completes
+   → snapshot_format is blank, total_count stays 0
+
+2. Custom snapshot POST with custom_config (filter + chunk_ioc_count as per the API docs):
+
+   We've tried multiple variations. All result in either:
+   → status = "errors" after a long wait (snapshot IDs: 8546374, 8546474, 8546664)
+   → or permanently stuck at "inprogress" (8551509)
+
+3. Looking at scheduled exports that DO complete:
+
+   We can see exports completing automatically every few hours:
+     export-23021  → 10,000 records, status=completed ✓
+     export-18397  → 10,000 records, status=completed ✓
+     export-23218  →  1,000 records, status=completed ✓
+
+   But these scheduled exports only contain observables (IOCs like IP addresses, domains,
+   hashes, URLs). They don't include the threat model entities we need (actors, campaigns,
+   malware, vulnerabilities). They also have no date filter — they're a full current snapshot
+   of active indicators, not a historical window.
+
+4. What we specifically need that the snapshot doesn't appear to provide for our org:
+
+   a) Threat model entity exports — actors, campaigns, malware, vulnerabilities with their
+      description HTML bodies. The API documentation says snapshot "does not export
+      threat-model entities", which we've confirmed in testing.
+
+   b) Date-filtered exports — we need data from 2024-01-01 onwards, not just the current
+      active observable corpus.
+
+---
+
+WHAT WE'D LIKE FROM YOU
+
+Either of the following would unblock us:
+
+  Option A — Enable custom snapshot with date filter for our org (org_id 2956):
+    POST /api/v1/snapshot/ with custom_config containing a filter and chunk_ioc_count
+    We'd need this to actually complete rather than error/hang.
+
+  Option B — A one-off export of the following from 2024-01-01 to today:
+    - actors (with description field included)
+    - campaigns (with description field included)
+    - malware (with capabilities[], malware_types[], description)
+    - vulnerabilities (with cvss2_score, cvss3_score, epss_score, epss_percentile)
+
+    Preferred format: JSON Lines (one record per line), one file per entity type.
+    Delivery: S3, shared drive, or direct file transfer is all fine.
+
+    The specific fields we need are documented in detail in the data request we filed
+    previously (reference: data_request_threatstream_export.md).
+
+We're happy to jump on a call if it's easier to walk through the requirements. Thanks again for the help — we know this is a bit of an unusual request compared to the standard snapshot use case.
+
+Barry
+Ilamona Threat Intelligence Team
