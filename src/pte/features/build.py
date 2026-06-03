@@ -84,3 +84,106 @@ class FeatureBuilder:
                         "tier": "LLM_EXTRACTED",
                     })
         self._store.write(self._batch_id, "industry_tool_cooccur", industry_tool)
+
+        # Tool weekly trend features for T2ToolTactic (ARIMA-equivalent time series)
+        # Buckets industry_tool rows by ISO week so we have count-per-week per tool
+        from collections import defaultdict as _dd
+        from datetime import datetime as _dt, timedelta as _td
+
+        def _week_start(date_str: str) -> str:
+            try:
+                d = _dt.fromisoformat(date_str[:10])
+                return (d - _td(days=d.weekday())).strftime("%Y-%m-%d")
+            except Exception:
+                return ""
+
+        weekly_counts: dict[str, dict[str, int]] = _dd(lambda: _dd(int))
+        for row in industry_tool:
+            tool = row.get("tool", "")
+            ts = row.get("created_ts", "")
+            if tool and ts:
+                week = _week_start(ts)
+                if week:
+                    weekly_counts[tool][week] += 1
+
+        tool_weekly_rows = []
+        for tool, week_map in weekly_counts.items():
+            for week, count in week_map.items():
+                tool_weekly_rows.append({
+                    "tool": tool,
+                    "week_start": week,
+                    "count": count,
+                    "tier": "LLM_EXTRACTED",
+                })
+        self._store.write(self._batch_id, "tool_weekly_trends", tool_weekly_rows)
+
+        # Vulnerability exploitation labels for T1
+        # Build lookup from raw vulnerability records for fast access
+        vuln_lookup: dict[str, dict] = {}
+        for raw in raw_store.read(self._batch_id, "vulnerability"):
+            vuln_lookup[str(raw.get("id", ""))] = raw
+
+        vuln_labelled = []
+        for e in entities:
+            if e.entity_type not in ("cve", "vulnerability"):
+                continue
+            raw_vuln = vuln_lookup.get(e.entity_id, {})
+
+            # Derive exploitation label from tags (the reliable signal for this data)
+            # Positive signals: observed-in-the-wild:Yes, was-zero-day:Yes,
+            #   exploitation-state:*, exploitation-consequence:* (non-trivial)
+            # Negative signals: observed-in-the-wild:No, was-zero-day:No
+            tags = [t.get("name", "") if isinstance(t, dict) else str(t)
+                    for t in raw_vuln.get("tags", [])]
+            tag_str = " ".join(tags).lower()
+
+            exploited = 0
+            if ("observed-in-the-wild:yes" in tag_str
+                    or "was-zero-day:yes" in tag_str
+                    or "exploitation-state:weaponized" in tag_str
+                    or "exploitation-state:exploited" in tag_str):
+                exploited = 1
+            elif raw_vuln.get("epss_score", 0) and raw_vuln["epss_score"] > 0.1:
+                # High EPSS as a secondary signal (>10th percentile probability of exploitation)
+                exploited = 1
+
+            epss = raw_vuln.get("epss_score") or 0.0
+            cvss = raw_vuln.get("cvss3_score") or raw_vuln.get("cvss2_score") or 0.0
+            vuln_labelled.append({
+                "entity_id": e.entity_id,
+                "epss_score": float(epss),
+                "cvss_score": float(cvss),
+                "epss_percentile": float(raw_vuln.get("epss_percentile") or 0.0),
+                "tag_count": len(tags),
+                "first_seen": e.first_seen,
+                "created_ts": ts_lookup.get(e.entity_id, ""),
+                "exploited": exploited,
+                "tier": "OBSERVED",
+            })
+        # Overwrite vulnerability_features with labelled version
+        self._store.write(self._batch_id, "vulnerability_features", vuln_labelled)
+
+        # Company features for T3 (conditional on LLM extraction coverage)
+        company_rows = []
+        for e in entities:
+            if not e.company:
+                continue
+            companies = e.company if isinstance(e.company, list) else [e.company]
+            for c in companies:
+                if not isinstance(c, dict):
+                    continue
+                company_name = c.get("name", "")
+                stix_id = c.get("stix_id", "")
+                conf = c.get("extraction_confidence") or e.llm_extraction_confidence or 0.0
+                if company_name:
+                    company_rows.append({
+                        "entity_id": e.entity_id,
+                        "company_name": company_name,
+                        "company_stix_id": stix_id,
+                        "industry": (e.industry or [""])[0],
+                        "tool": (e.tool or "") if isinstance(e.tool, str) else "",
+                        "extraction_confidence": conf,
+                        "created_ts": ts_lookup.get(e.entity_id, ""),
+                        "tier": "LLM_EXTRACTED",
+                    })
+        self._store.write(self._batch_id, "company_features", company_rows)
