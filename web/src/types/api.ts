@@ -23,3 +23,9 @@ export interface BatchInfo {
   to_date: string;
   total_deduplicated: number;
 }
+
+export interface TrendsResponse {
+  weeks: string[]
+  series: { tool: string; counts: number[] }[]
+  holdout_start: string | null
+}
