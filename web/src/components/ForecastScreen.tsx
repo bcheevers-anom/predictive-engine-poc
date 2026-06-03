@@ -1,17 +1,13 @@
 import React, { useState, useEffect } from 'react'
-import { ForecastResponse } from '../types/api'
-import InsufficientCoverage from './states/InsufficientCoverage'
-import LowConfidence from './states/LowConfidence'
+import { TrendsResponse } from '../types/api'
+import InfoTooltip from './InfoTooltip'
+import ToolTrendChart from './graphs/ToolTrendChart'
+import MetricsGrid from './MetricsGrid'
+import ModelProvenancePanel from './ModelProvenancePanel'
 import NoModelYet from './states/NoModelYet'
-import SparseEvidence from './states/SparseEvidence'
-import FeatureContributions from './graphs/FeatureContributions'
-import ClassificationGraph from './graphs/ClassificationGraph'
 import CooccurrenceHeatmap from './graphs/CooccurrenceHeatmap'
-import CalibrationCurve from './graphs/CalibrationCurve'
-import HonestyTooltip from './HonestyTooltip'
 import EvidenceTrail from './EvidenceTrail'
-
-const MIN_CONFIDENCE = 0.40
+import SparseEvidence from './states/SparseEvidence'
 
 interface Props { batchId: string }
 
@@ -21,15 +17,13 @@ export default function ForecastScreen({ batchId }: Props) {
   const [industry, setIndustry] = useState('')
   const [industriesLoading, setIndustriesLoading] = useState(false)
   const [loading, setLoading] = useState(false)
-  const [data, setData] = useState<ForecastResponse | null>(null)
+  const [data, setData] = useState<any>(null)
+  const [trends, setTrends] = useState<TrendsResponse | null>(null)
   const [error, setError] = useState<string | null>(null)
 
-  // Load industry list when batch changes
   useEffect(() => {
     if (!batchId) return
-    setData(null)
-    setIndustries([])
-    setIndustry('')
+    setData(null); setTrends(null); setIndustries([]); setIndustry('')
     setIndustriesLoading(true)
     fetch(`/api/industries?batch_id=${batchId}&min_count=5`)
       .then(r => r.json())
@@ -45,11 +39,14 @@ export default function ForecastScreen({ batchId }: Props) {
 
   const fetchForecast = async () => {
     if (!batchId || !industry) return
-    setLoading(true)
-    setError(null)
+    setLoading(true); setError(null); setTrends(null)
     try {
-      const resp = await fetch(`/api/forecast?industry=${encodeURIComponent(industry)}&batch_id=${batchId}`)
-      setData(await resp.json())
+      const [forecastResp, trendsResp] = await Promise.all([
+        fetch(`/api/forecast?industry=${encodeURIComponent(industry)}&batch_id=${batchId}`),
+        fetch(`/api/trends?industry=${encodeURIComponent(industry)}&batch_id=${batchId}`),
+      ])
+      setData(await forecastResp.json())
+      setTrends(await trendsResp.json())
     } catch {
       setError('Failed to load forecast.')
     } finally {
@@ -64,9 +61,9 @@ export default function ForecastScreen({ batchId }: Props) {
   )
 
   return (
-    <div>
+    <div style={{ display: 'grid', gap: 24 }}>
       {/* Controls */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 24, flexWrap: 'wrap' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
           <label htmlFor="industry-select" style={{ fontWeight: 600, whiteSpace: 'nowrap' }}>Sector:</label>
           {industries.length > 0 ? (
@@ -77,21 +74,21 @@ export default function ForecastScreen({ batchId }: Props) {
               style={{ padding: '6px 10px', minWidth: 220, borderRadius: 4, border: '1px solid #ccc', fontSize: 14 }}
             >
               {industries.map(ind => (
-                <option key={ind} value={ind}>
-                  {ind} ({industryCoverage[ind] ?? 0} entities)
-                </option>
+                <option key={ind} value={ind}>{ind} ({industryCoverage[ind] ?? 0} entities)</option>
               ))}
             </select>
           ) : (
-            <span style={{ color: '#aaa', fontSize: 13 }}>No industries loaded yet</span>
+            <span style={{ color: '#aaa', fontSize: 13 }}>{industriesLoading ? 'Loading sectors...' : 'No sectors loaded'}</span>
           )}
         </div>
         <button
           onClick={fetchForecast}
-          disabled={loading || industriesLoading || (!industry && !industriesLoading)}
+          disabled={loading || industriesLoading || !industry}
           style={{
-            padding: '6px 20px', background: industry ? '#1976d2' : '#ccc',
-            color: 'white', border: 'none', borderRadius: 4, cursor: industry ? 'pointer' : 'not-allowed',
+            padding: '6px 20px',
+            background: (!loading && !industriesLoading && industry) ? '#1976d2' : '#ccc',
+            color: 'white', border: 'none', borderRadius: 4,
+            cursor: (!loading && !industriesLoading && industry) ? 'pointer' : 'not-allowed',
             fontSize: 14, fontWeight: 600,
           }}
         >
@@ -103,79 +100,78 @@ export default function ForecastScreen({ batchId }: Props) {
       </div>
 
       {error && <p style={{ color: 'red' }}>{error}</p>}
-
       {data?.status === 'no_model' && <NoModelYet message={data.message} hint={data.hint} />}
       {data?.status === 'not_supported' && <p style={{ color: '#888' }}>{data.reason}</p>}
 
-      {data?.status === 'ok' && data.finding && (() => {
-        const conf = data.finding.confidence
-        const prediction = data.prediction || []
-        const evidence: any[] = []
+      {data?.status === 'ok' && (() => {
+        const acc: number = data.top_k_accuracy ?? 0
+        const baseline: number = data.baselines?.sector_frequency_top_k ?? 0
+        const prediction: { tool: string; count: number }[] = data.prediction || []
+        const metrics = data.metrics || {}
+        const provenance = data.provenance || {}
         const coverage = data.coverage || {}
-        const passeGate = (data as any).passes_gate
-        const gateNote = (data as any).gate_note || ''
-        const baseline = (data as any).baselines?.sector_frequency_top_k ?? 0
-        const isLowConfidence = conf < MIN_CONFIDENCE
+        const passes: boolean = data.passes_gate
 
-        const GateBanner = () => !passeGate ? (
-          <div style={{
-            padding: '10px 16px', background: '#fff8e1', border: '1px solid #f9a825',
-            borderRadius: 6, marginBottom: 16, fontSize: 13,
-          }}>
-            <strong>Directional only</strong> — model accuracy ({(conf * 100).toFixed(1)}%) does not beat the
-            frequency baseline ({(baseline * 100).toFixed(1)}%) on the held-out week.
-            {gateNote && <span style={{ color: '#777', marginLeft: 8 }}>({gateNote})</span>}
-          </div>
-        ) : null
+        const holdoutMatch = (data.gate_note || '').match(/holdout_start=(\d{4}-\d{2}-\d{2})/)
+        const holdoutLabel = holdoutMatch
+          ? `the held-out test week (from ${holdoutMatch[1]})`
+          : 'the held-out test week'
 
-        const Content = () => (
-          <div style={{ display: 'grid', gap: 24 }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-              <div>
-                <h2 style={{ margin: 0, fontSize: 18 }}>{data.finding!.title}</h2>
-                <div style={{ display: 'flex', gap: 16, marginTop: 6, fontSize: 13, color: '#555' }}>
-                  <span>Top-k accuracy: <strong>{(conf * 100).toFixed(1)}%</strong></span>
-                  <span>Baseline: <strong>{(baseline * 100).toFixed(1)}%</strong></span>
-                  <span style={{ color: conf > baseline ? '#2e7d32' : '#c62828' }}>
-                    {conf > baseline ? '▲' : '▼'} {Math.abs((conf - baseline) * 100).toFixed(1)}% vs baseline
-                  </span>
+        return (
+          <>
+            {/* Metric cards */}
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+              <div style={{ background: '#e3f2fd', borderRadius: 8, padding: '14px 16px' }}>
+                <div style={{ fontSize: 11, color: '#666', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+                  Prediction accuracy{' '}
+                  <InfoTooltip text={`Out of every 10 tools we predicted would target this sector, about ${Math.round(acc * 10)} actually appeared in the test week's threat reports.`} />
+                </div>
+                <div style={{ fontSize: 28, fontWeight: 700, color: acc > baseline ? '#2e7d32' : '#c62828', marginTop: 4 }}>
+                  {(acc * 100).toFixed(1)}%
                 </div>
               </div>
-              <HonestyTooltip
-                reliabilityBasis="LLM_EXTRACTED (industry/tool) + DERIVED (trend)"
-                coverage={coverage}
-              />
+              <div style={{ background: '#f3e5f5', borderRadius: 8, padding: '14px 16px' }}>
+                <div style={{ fontSize: 11, color: '#666', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+                  Best simple guess
+                </div>
+                <div style={{ fontSize: 28, fontWeight: 700, color: '#555', marginTop: 4 }}>
+                  {(baseline * 100).toFixed(1)}%
+                </div>
+                <div style={{ fontSize: 12, color: '#888', marginTop: 2 }}>Just picking the most common tools</div>
+              </div>
             </div>
 
-            <GateBanner />
+            {/* Directional-only banner */}
+            {!passes && (
+              <div style={{ padding: '10px 16px', background: '#fff8e1', border: '1px solid #f9a825', borderRadius: 6, fontSize: 13 }}>
+                <strong>Directional only</strong> — this model doesn't yet outperform a simple frequency guess on this dataset.
+                Predictions show the right direction but should not be treated as firm.
+              </div>
+            )}
 
+            {/* Top predicted tools */}
             {prediction.length > 0 && (
               <div>
                 <h3 style={{ fontSize: 14, marginBottom: 8 }}>
                   Top predicted tools for <em>{industry}</em>
                 </h3>
-                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                  {prediction.map((p: any, i: number) => (
-                    <div key={i} style={{
-                      padding: '6px 14px', background: '#e3f2fd', borderRadius: 20,
-                      fontSize: 13, fontWeight: 500,
-                    }}>
-                      {p.tool} <span style={{ color: '#888', fontWeight: 400 }}>({p.count})</span>
-                    </div>
-                  ))}
-                </div>
+                <ToolChips tools={prediction} />
               </div>
             )}
             {prediction.length === 0 && (
-              <p style={{ color: '#888', fontSize: 13 }}>
-                No tool predictions available for <em>{industry}</em> — try a sector with higher coverage.
-              </p>
+              <p style={{ color: '#888', fontSize: 13 }}>No tool predictions available for <em>{industry}</em> — try a sector with higher coverage.</p>
             )}
 
-            <SparseEvidence count={evidence.length}>
-              <EvidenceTrail evidence={evidence} batchId={batchId} />
-            </SparseEvidence>
+            {/* Stacked area trend chart */}
+            {trends && <ToolTrendChart data={trends} industry={industry} />}
 
+            {/* Full metrics grid */}
+            <MetricsGrid
+              metrics={{ ...metrics, baseline_top_k: baseline, lift_over_baseline: acc - baseline }}
+              holdoutLabel={holdoutLabel}
+            />
+
+            {/* Coverage heatmap */}
             {Object.keys(coverage).length > 0 && (
               <div>
                 <h3 style={{ fontSize: 14, marginBottom: 8 }}>Sector coverage (entities extracted)</h3>
@@ -183,24 +179,39 @@ export default function ForecastScreen({ batchId }: Props) {
               </div>
             )}
 
-            {data.feature_contributions && data.feature_contributions.length > 0 && (
-              <FeatureContributions contributions={data.feature_contributions} />
-            )}
-
-            <CalibrationCurve />
-
-            {(data as any).aql_port_idiom && (
-              <details style={{ fontSize: 12, color: '#888' }}>
-                <summary style={{ cursor: 'pointer' }}>AQL port idiom (engineering reference)</summary>
-                <pre style={{ marginTop: 4, background: '#f5f5f5', padding: 8, borderRadius: 4, overflow: 'auto' }}>
-                  {(data as any).aql_port_idiom}
-                </pre>
-              </details>
-            )}
-          </div>
+            {/* Model provenance */}
+            <ModelProvenancePanel provenance={{ ...provenance }} />
+          </>
         )
-        return isLowConfidence ? <LowConfidence><Content /></LowConfidence> : <Content />
       })()}
+    </div>
+  )
+}
+
+function ToolChips({ tools }: { tools: { tool: string; count: number }[] }) {
+  const [descriptions, setDescriptions] = useState<Record<string, string>>({})
+
+  useEffect(() => {
+    tools.forEach(({ tool }) => {
+      if (descriptions[tool]) return
+      fetch(`/api/tool-info?tool=${encodeURIComponent(tool)}`)
+        .then(r => r.json())
+        .then(d => setDescriptions(prev => ({ ...prev, [tool]: d.description })))
+        .catch(() => {})
+    })
+  }, [tools])
+
+  return (
+    <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+      {tools.slice(0, 5).map(({ tool, count }) => (
+        <div key={tool} style={{
+          padding: '6px 12px', background: '#e3f2fd', borderRadius: 20,
+          fontSize: 13, fontWeight: 500, display: 'flex', alignItems: 'center', gap: 6,
+        }}>
+          {tool} <span style={{ color: '#888', fontWeight: 400 }}>x{count}</span>
+          {descriptions[tool] && <InfoTooltip text={descriptions[tool]} />}
+        </div>
+      ))}
     </div>
   )
 }
