@@ -19,7 +19,13 @@ from pte.ingest.raw_store import RawStore
 from pte.common.provenance import make_run_id
 from pte.common.logging import progress
 
-ENTITY_BATCH = "ent-861c216a-07f0e5b2411d"
+# Use the full 2.5yr batch if available, otherwise fall back to the May 2026 entity batch
+_STATE = Path("data/ingest_state.json")
+ENTITY_BATCH = (
+    json.loads(_STATE.read_text()).get("batch_id")
+    if _STATE.exists()
+    else "ent-861c216a-07f0e5b2411d"
+)
 ENTITY_TYPES = ["campaign", "actor", "malware"]
 MAX_DESCRIPTION_CHARS = 4000
 
