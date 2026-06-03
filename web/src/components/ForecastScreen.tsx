@@ -19,6 +19,7 @@ export default function ForecastScreen({ batchId }: Props) {
   const [industries, setIndustries] = useState<string[]>([])
   const [industryCoverage, setIndustryCoverage] = useState<Record<string, number>>({})
   const [industry, setIndustry] = useState('')
+  const [industriesLoading, setIndustriesLoading] = useState(false)
   const [loading, setLoading] = useState(false)
   const [data, setData] = useState<ForecastResponse | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -29,6 +30,7 @@ export default function ForecastScreen({ batchId }: Props) {
     setData(null)
     setIndustries([])
     setIndustry('')
+    setIndustriesLoading(true)
     fetch(`/api/industries?batch_id=${batchId}&min_count=5`)
       .then(r => r.json())
       .then(d => {
@@ -38,6 +40,7 @@ export default function ForecastScreen({ batchId }: Props) {
         if (list.length > 0) setIndustry(list[0])
       })
       .catch(() => {})
+      .finally(() => setIndustriesLoading(false))
   }, [batchId])
 
   const fetchForecast = async () => {
@@ -85,7 +88,7 @@ export default function ForecastScreen({ batchId }: Props) {
         </div>
         <button
           onClick={fetchForecast}
-          disabled={loading || !industry}
+          disabled={loading || industriesLoading || (!industry && !industriesLoading)}
           style={{
             padding: '6px 20px', background: industry ? '#1976d2' : '#ccc',
             color: 'white', border: 'none', borderRadius: 4, cursor: industry ? 'pointer' : 'not-allowed',

@@ -13,8 +13,13 @@ export default function App() {
         <button onClick={() => setTab('forecast')} style={{ marginRight: 16, fontWeight: tab === 'forecast' ? 700 : 400 }}>Forecast</button>
         <button onClick={() => setTab('devpanel')} style={{ fontWeight: tab === 'devpanel' ? 700 : 400 }}>Dev Panel</button>
       </nav>
-      {tab === 'forecast' && <ForecastScreen batchId={batchId} />}
-      {tab === 'devpanel' && <DevPanel onBatchSelected={setBatchId} />}
+      {/* Keep both mounted so ForecastScreen loads industries as soon as batch is selected */}
+      <div style={{ display: tab === 'forecast' ? 'block' : 'none' }}>
+        <ForecastScreen batchId={batchId} />
+      </div>
+      <div style={{ display: tab === 'devpanel' ? 'block' : 'none' }}>
+        <DevPanel onBatchSelected={(id) => { setBatchId(id); setTab('forecast') }} />
+      </div>
     </div>
   )
 }
