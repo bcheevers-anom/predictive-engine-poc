@@ -138,18 +138,9 @@ async def ingest_entities(ts: ThreatStreamClient, batch_id: str) -> int:
         progress(f"  {model_type} complete: {stored} on disk")
         structured_log("entity_ingest_complete", model_type=model_type, count=stored)
 
-    # Consolidate all entity checkpoints into the raw store
-    store = RawStore(base_dir=str(DATA_DIR / "raw"))
-    for model_type, record_type in ENTITY_TYPES:
-        ents = load_entity_checkpoints(batch_id, record_type)
-        if ents:
-            # Write as individual JSON files (compatible with existing raw store reads)
-            for e in ents:
-                eid = str(e.get("id", "?"))
-                e["id"] = eid
-                store.write(batch_id, record_type, e)
-            progress(f"  Consolidated {len(ents)} {record_type} entities into raw store")
-
+    # Checkpoint files are already in data/raw/<batch_id>/<type>/checkpoints/
+    # store.read() finds them via *.json glob — no separate consolidation needed.
+    progress(f"  Entity checkpoints are readable directly from the raw store.")
     return total_stored
 
 # ── Observable ingest ─────────────────────────────────────────────────────────
@@ -297,12 +288,24 @@ async def main():
 
     # 2. Entities (fast, ~1hr, fully checkpointed)
     progress("\nStep 2: Entity pull (actors, campaigns, malware, vulnerabilities)...")
-    entity_count = await ingest_entities(ts, batch_id)
+    try:
+        entity_count = await ingest_entities(ts, batch_id)
+    except Exception as exc:
+        import traceback
+        progress(f"ERROR in ingest_entities: {exc}")
+        traceback.print_exc()
+        raise
     progress(f"\nEntities complete: {entity_count:,} total")
 
     # 3. Observables (slow, capped, checkpointed every 50k)
     progress(f"\nStep 3: Observable pull (capped at {MAX_OBSERVABLES:,})...")
-    obs_count = await ingest_observables(ts, batch_id)
+    try:
+        obs_count = await ingest_observables(ts, batch_id)
+    except Exception as exc:
+        import traceback
+        progress(f"ERROR in ingest_observables: {exc}")
+        traceback.print_exc()
+        raise
     progress(f"\nObservables complete: {obs_count:,} unique")
 
     # 4. Manifest
