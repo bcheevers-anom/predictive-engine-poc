@@ -7,7 +7,7 @@ Resume: python run_full_ingest.py   (same command — checkpoints skip completed
 
 What this pulls:
   - Actors, campaigns, malware, vulnerabilities (entity REST API, full objects with description)
-  - Observables (cursor-paginated intelligence API, capped at MAX_OBSERVABLES)
+  - Observables (cursor-paginated intelligence API, capped at MAX_OBSERVABLES — set to None for full corpus)
 
 Checkpointing:
   - Each entity is written to disk immediately after fetch
@@ -216,7 +216,7 @@ async def ingest_observables(ts: ThreatStreamClient, batch_id: str) -> int:
             })
             progress(f"  Checkpoint: {already_written:,} unique observables on disk so far")
 
-        if total_fetched >= MAX_OBSERVABLES:
+        if MAX_OBSERVABLES is not None and total_fetched >= MAX_OBSERVABLES:
             # Save cursor so next run with higher cap resumes exactly here
             save_observable_state(batch_id, {
                 "pages_written": page,
@@ -298,7 +298,8 @@ async def main():
     progress(f"\nEntities complete: {entity_count:,} total")
 
     # 3. Observables (slow, capped, checkpointed every 50k)
-    progress(f"\nStep 3: Observable pull (capped at {MAX_OBSERVABLES:,})...")
+    cap_str = f"capped at {MAX_OBSERVABLES:,}" if MAX_OBSERVABLES is not None else "no cap — full corpus"
+    progress(f"\nStep 3: Observable pull ({cap_str})...")
     try:
         obs_count = await ingest_observables(ts, batch_id)
     except Exception as exc:
