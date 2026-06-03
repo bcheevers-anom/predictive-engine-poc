@@ -88,7 +88,7 @@ class ThreatStreamClient:
         url = f"{self.BASE}/api/v1/{model_type}/{entity_id}/"
         async with self._client() as http:
             resp = await http.get(url)
-            if resp.status_code == 404:
+            if resp.status_code in (404, 400):
                 return {}
             resp.raise_for_status()
             return resp.json()

@@ -140,7 +140,7 @@ class ExtractionRunner:
         (dest / "extracted_entities.json").write_text(json.dumps(all_entities, indent=2))
         q_path = str(dest / "quarantine.json")
         self.quarantine.dump(q_path)
-        progress(f"Consolidated {len(all_entities)} entities → data/schema/{self._batch_id}/extracted_entities.json")
+        progress(f"Consolidated {len(all_entities)} entities -> data/schema/{self._batch_id}/extracted_entities.json")
         return all_entities
 
     async def run(self) -> None:
