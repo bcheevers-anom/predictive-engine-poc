@@ -56,3 +56,58 @@ def test_not_supported_returns_explicit_message():
         data = resp.json()
         if data.get("status") == "not_supported":
             assert "reason" in data
+
+
+def test_trends_endpoint_returns_weekly_series(tmp_path):
+    import json as _json
+    from pathlib import Path as _Path
+    import pyarrow as _pa
+    import pyarrow.parquet as _pq
+    from fastapi.testclient import TestClient
+    from api.main import app
+
+    records = [
+        {"entity_id": f"e{i}", "industry": "Energy",
+         "tool": "Cobalt Strike" if i < 5 else "Mimikatz",
+         "tactic": "", "corroboration_score": 0.0,
+         "created_ts": "2026-05-05" if i < 5 else "2026-05-12",
+         "tier": "LLM_EXTRACTED"}
+        for i in range(10)
+    ]
+    feat_dir = tmp_path / "features" / "batch_test"
+    feat_dir.mkdir(parents=True)
+    table = _pa.Table.from_pylist(records)
+    _pq.write_table(table, str(feat_dir / "industry_tool_cooccur.parquet"))
+
+    report = {"eval_note": "time-split: train=5 rows, holdout=5 rows, holdout_start=2026-05-12, industries_evaluated=1"}
+    models_dir = tmp_path / "models" / "batch_test"
+    models_dir.mkdir(parents=True)
+    (models_dir / "t2ind_report.json").write_text(_json.dumps(report))
+
+    client = TestClient(app)
+    resp = client.get(f"/api/trends?batch_id=batch_test&industry=Energy&data_dir={tmp_path}")
+    assert resp.status_code == 200
+    d = resp.json()
+    assert "weeks" in d
+    assert "series" in d
+    assert len(d["series"]) > 0
+    assert "holdout_start" in d
+
+def test_tool_info_known_tool():
+    from fastapi.testclient import TestClient
+    from api.main import app
+    client = TestClient(app)
+    resp = client.get("/api/tool-info?tool=PowerShell")
+    assert resp.status_code == 200
+    d = resp.json()
+    assert "description" in d
+    assert len(d["description"]) > 10
+
+def test_tool_info_unknown_tool():
+    from fastapi.testclient import TestClient
+    from api.main import app
+    client = TestClient(app)
+    resp = client.get("/api/tool-info?tool=SomeCompletelyUnknownTool999")
+    assert resp.status_code == 200
+    d = resp.json()
+    assert "description" in d

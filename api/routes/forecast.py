@@ -23,6 +23,41 @@ async def get_industries(batch_id: str = Query(...), data_dir: str = "data", min
     return {"industries": industries, "coverage": {i: coverage[i] for i in industries}}
 
 
+_TOOL_DESCRIPTIONS: dict[str, str] = {
+    "powershell": "Microsoft's scripting language, frequently abused by attackers to run commands and download malware without triggering antivirus.",
+    "cobalt strike": "Commercial penetration testing tool widely used by attackers as a command-and-control framework after gaining initial access.",
+    "mimikatz": "A credential-dumping tool that extracts passwords and tokens from Windows memory.",
+    "lockbit": "A ransomware family that encrypts victim files and demands payment — one of the most prolific ransomware groups globally.",
+    "ngrok": "A tunnelling tool that creates temporary public URLs — used legitimately by developers, abused by attackers to bypass firewalls.",
+    "anydesk": "Remote desktop software — legitimate tool sometimes abused by attackers to maintain persistent access.",
+    "impacket": "A Python library for network protocols, used by attackers for lateral movement and credential theft.",
+    "powerstats": "A PowerShell-based backdoor associated with Iranian threat actors, used for command-and-control.",
+    "powgoop": "A PowerShell downloader associated with Iranian state-linked threat actors.",
+    "moriagent": "A backdoor used by Iranian APT groups for persistent access to compromised systems.",
+    "beacon": "The payload component of Cobalt Strike — a stealthy implant used for command-and-control.",
+    "metasploit": "A widely used penetration testing framework that also appears in real-world attacks.",
+    "psexec": "A Microsoft Sysinternals tool for running processes remotely — frequently used by attackers for lateral movement.",
+    "systembc": "A proxy malware used as a backdoor, often deployed alongside ransomware.",
+    "remcos": "A commercial remote access tool frequently abused by attackers for surveillance and control.",
+    "agenttesla": "An info-stealing malware that harvests credentials, keystrokes, and screenshots.",
+}
+
+
+@router.get("/tool-info")
+async def get_tool_info(tool: str = Query(...)):
+    """Return a plain-English one-sentence description for a named tool."""
+    key = tool.lower().strip()
+    if key in _TOOL_DESCRIPTIONS:
+        return {"tool": tool, "description": _TOOL_DESCRIPTIONS[key]}
+    for known, desc in _TOOL_DESCRIPTIONS.items():
+        if known in key or key in known:
+            return {"tool": tool, "description": desc}
+    return {
+        "tool": tool,
+        "description": "A tool or malware family observed in threat intelligence reports for this sector.",
+    }
+
+
 @router.get("/forecast")
 async def get_forecast(
     batch_id: str = Query(...),
@@ -70,8 +105,26 @@ async def get_forecast(
         "prediction": prediction,
         "feature_contributions": contribs,
         "coverage": report.get("coverage_per_industry", {}),
-        "baselines": {"sector_frequency_top_k": report.get("sector_frequency_baseline_top_k", 0)},
-        "aql_port_idiom": t.aql_port_idiom,
-        "batch_id": batch_id,
         "top_k_accuracy": report.get("top_k_accuracy", 0.0),
+        "metrics": {
+            "precision_at_k": report.get("precision_at_k"),
+            "recall_at_k": report.get("recall_at_k"),
+            "f1_at_k": report.get("f1_at_k"),
+            "map_score": report.get("map_score"),
+            "ndcg_at_k": report.get("ndcg_at_k"),
+            "top_k_accuracy": report.get("top_k_accuracy"),
+            "baseline_top_k": report.get("sector_frequency_baseline_top_k"),
+            "lift_over_baseline": report.get("lift_over_baseline"),
+        },
+        "provenance": {
+            "model_type": report.get("model_type", "Co-occurrence frequency ranking (top-k)"),
+            "extraction_model": report.get("extraction_model", "Claude Opus 4.8 via AWS Bedrock"),
+            "feature_tier": report.get("feature_tier", "LLM_EXTRACTED"),
+            "train_rows": report.get("train_rows"),
+            "holdout_rows": report.get("holdout_rows"),
+            "industries_evaluated": report.get("industries_evaluated"),
+            "aql_port_idiom": t.aql_port_idiom,
+        },
+        "baselines": {"sector_frequency_top_k": report.get("sector_frequency_baseline_top_k", 0)},
+        "batch_id": batch_id,
     }
