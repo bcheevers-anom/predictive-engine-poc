@@ -2,7 +2,7 @@
 
 **Date:** 2026-06-03  
 **Status:** Approved  
-**Scope:** ForecastScreen.tsx redesign + two new API endpoints. No changes to backend models, data pipeline, or Dev Panel.
+**Scope:** ForecastScreen.tsx redesign + two new API endpoints + extended ML metrics in the evaluate() backend. No changes to the data pipeline or Dev Panel.
 
 ---
 
@@ -180,9 +180,83 @@ Matching is case-insensitive. If the tool name contains a known name as a substr
 |---|---|
 | `web/src/components/InfoTooltip.tsx` | Create — reusable tooltip component |
 | `web/src/components/graphs/ToolTrendChart.tsx` | Create — stacked area chart |
-| `web/src/components/ForecastScreen.tsx` | Modify — new layout, metric cards, chart integration |
-| `api/routes/forecast.py` | Modify — add `/api/trends` and `/api/tool-info` endpoints |
-| `web/src/types/api.ts` | Modify — add `TrendsResponse` type |
+| `web/src/components/MetricsGrid.tsx` | Create — grid of ML metric cards with ⓘ explainers |
+| `web/src/components/ModelProvenancePanel.tsx` | Create — collapsible model details panel |
+| `web/src/components/ForecastScreen.tsx` | Modify — new layout: metric cards, chart, metrics grid, provenance |
+| `api/routes/forecast.py` | Modify — add `/api/trends` and `/api/tool-info`; extend forecast response with all metrics |
+| `src/pte/predict/t2_industry.py` | Modify — compute precision@k, recall@k, F1@k, MAP, NDCG@k in evaluate() |
+| `src/pte/evaluate/metrics.py` | Modify — add `precision_at_k`, `recall_at_k`, `f1_at_k`, `mean_average_precision`, `ndcg_at_k` functions |
+| `web/src/types/api.ts` | Modify — add `TrendsResponse`, `MetricsReport` types |
+
+---
+
+## Extended ML Metrics (backend + UI)
+
+### Why T2-Industry is a ranking model, not a classifier
+
+T2-Industry predicts a ranked list of tools for a sector. Standard binary classification metrics (F1, AUROC, precision/recall as single numbers) don't directly apply, but their ranking equivalents do — and are arguably more informative for this use case.
+
+### Metrics to compute and show
+
+The `t2_industry.evaluate()` method must be extended to compute and store all of the following in `t2ind_report.json`. The forecast API must pass them through. The UI must render each with a plain-English ⓘ explainer.
+
+| Metric | Display name | Tooltip (Option B plain-English tone) |
+|---|---|---|
+| `top_k_accuracy` | Prediction accuracy | "Out of every 10 tools we predicted would target this sector, about N actually appeared in the following week's threat reports." |
+| `precision_at_k` | Precision | "Of the tools we flagged, what fraction were genuinely seen in that sector? High precision = fewer false alarms." |
+| `recall_at_k` | Recall | "Of all the tools that actually appeared, what fraction did we catch? High recall = fewer missed threats." |
+| `f1_at_k` | F1 score | "The balance between precision and recall — a single number that penalises both missing threats and false alarms equally." |
+| `mean_average_precision` | Average precision (MAP) | "Measures whether the most important tools are ranked highest, not just whether they appear somewhere in our top-10 list. Higher is better." |
+| `ndcg_at_k` | Ranking quality (NDCG) | "Rewards predicting the most common threats at the top of the list. A score of 1.0 would mean perfect ranking." |
+| `coverage_recall` | Sector coverage | "The fraction of sectors we can forecast at all — sectors with fewer than 5 training examples are skipped." |
+| `sector_frequency_baseline_top_k` | Simple guess | "Just picking the most common tools overall, ignoring which sector we're forecasting." |
+| `lift_over_baseline` | Lift vs simple guess | "How much better (or worse) the model is compared to the simple guess. Positive = model adds value." |
+
+### Definitions for ranking metrics (Precision@k, Recall@k, F1@k, MAP, NDCG@k)
+
+All metrics use k=3 (top-3 predictions) to match the current top_k_accuracy evaluation.
+
+**Precision@3** = (tools predicted that appeared in holdout) ÷ 3  
+**Recall@3** = (tools predicted that appeared in holdout) ÷ (total unique tools in holdout for that sector)  
+**F1@3** = 2 × (P@3 × R@3) / (P@3 + R@3)  
+**MAP** = mean over all evaluated sectors of average precision per sector  
+**NDCG@3** = discounted cumulative gain at 3, using holdout tool frequency as relevance weights  
+
+All are averaged across the 60 evaluated industries.
+
+### Model provenance panel
+
+Below the metrics, a collapsible "Model details" section showing:
+- **Model type:** Co-occurrence frequency ranking (top-k)
+- **AQL port idiom:** the full idiom string (already in report)
+- **Training data:** N rows, date range (from eval_note)
+- **Holdout data:** N rows, holdout start date
+- **Industries evaluated:** 60
+- **Extraction model:** Claude Opus 4.8 via AWS Bedrock (LLM that produced the training features)
+- **Feature tier:** LLM_EXTRACTED (industry/tool pairs from actor and campaign descriptions)
+
+This makes it explicit that the predictions are downstream of an LLM extraction step, and what that model was.
+
+### UI layout for metrics
+
+A grid of metric cards below the tool chips. Two rows of 4:
+
+```
+┌──────────┬──────────┬──────────┬──────────┐
+│ Precision│  Recall  │    F1    │   MAP    │
+│  0.13 ⓘ  │  0.08 ⓘ  │  0.10 ⓘ  │  0.11 ⓘ  │
+├──────────┼──────────┼──────────┼──────────┤
+│  NDCG@3  │  Lift    │Coverage  │ Baseline │
+│  0.09 ⓘ  │ -0.13 ⓘ  │  60 sec  │  0.27 ⓘ  |
+└──────────┴──────────┴──────────┴──────────┘
+```
+
+Each card: metric name, value, ⓘ InfoTooltip with plain-English explanation. Colour coding:
+- Green tint if metric > baseline equivalent
+- Red tint if metric < baseline equivalent  
+- Grey if no baseline comparison available
+
+The grid is labelled: **"Model performance details"** with a subtitle: *"All metrics evaluated on the held-out week (May 25–31, 2026) — data the model never saw during training."*
 
 ---
 
