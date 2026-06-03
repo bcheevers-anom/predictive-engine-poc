@@ -177,6 +177,12 @@ async def process_chunks(chunk_paths: list[str], batch_id: str) -> int:
         store.write_bulk(batch_id, f"snapshot_chunk_{chunk_idx:04d}", deduped_chunk)
         chunk_idx += 1
 
+    # Detect parquet chunks on disk (covers resume case where loop was skipped)
+    raw_dir_check = DATA_DIR / "raw" / batch_id
+    existing_pq = sorted(raw_dir_check.glob("snapshot_chunk_*/bulk.parquet"))
+    if len(existing_pq) > chunk_idx:
+        chunk_idx = len(existing_pq)
+
     # Consolidate all snapshot parquet chunks using DuckDB — handles data larger than RAM
     progress(f"  Consolidating {chunk_idx} parquet chunks using DuckDB (out-of-core dedup)...")
     import duckdb
@@ -198,7 +204,7 @@ async def process_chunks(chunk_paths: list[str], batch_id: str) -> int:
                            PARTITION BY value, itype
                            ORDER BY COALESCE(confidence, 0) DESC
                        ) AS rn
-                FROM read_parquet('{chunk_pattern}')
+                FROM read_parquet('{chunk_pattern}', union_by_name=true)
                 WHERE value IS NOT NULL AND value != ''
                   AND itype IS NOT NULL AND itype != ''
             )
