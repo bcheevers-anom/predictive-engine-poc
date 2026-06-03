@@ -175,8 +175,12 @@ async def ingest_observables(ts: ThreatStreamClient, batch_id: str) -> int:
         return state["records_written"]
 
     already_written = state["records_written"]
-    if already_written > 0:
-        progress(f"Resuming observables: {already_written:,} already written, continuing...")
+    resume_cursor = state.get("next_cursor")  # saved cursor URL for exact resume
+
+    if already_written > 0 and resume_cursor:
+        progress(f"Resuming observables from cursor (skipping {already_written:,} already written)...")
+    elif already_written > 0:
+        progress(f"Resuming observables: {already_written:,} already written (no cursor — will re-fetch and dedup)")
 
     params = {
         "created_ts__gte": FROM_DATE,
@@ -186,12 +190,18 @@ async def ingest_observables(ts: ThreatStreamClient, batch_id: str) -> int:
 
     store = RawStore(base_dir=str(DATA_DIR / "raw"))
     buffer: list[dict] = []
-    page = 0
-    total_fetched = 0
+    page = state.get("pages_written", 0)  # continue page counter from last checkpoint
+    total_fetched = already_written        # count already-written records toward cap
     chunk_number = state.get("chunks_written", 0)
     capped = False
 
-    async for records in ts.iter_observables(params=params, limit=1000):
+    # If we have a saved cursor, pass it as the starting URL override
+    iter_params = dict(params)
+    if resume_cursor:
+        # Pass cursor as a special override — iter_observables will use it as the first URL
+        iter_params["_resume_cursor"] = resume_cursor
+
+    async for records, next_cursor in ts.iter_observables_with_cursor(params=iter_params, limit=1000, resume_url=resume_cursor):
         buffer.extend(records)
         total_fetched += len(records)
         page += 1
@@ -210,12 +220,22 @@ async def ingest_observables(ts: ThreatStreamClient, batch_id: str) -> int:
                 "pages_written": page,
                 "records_written": already_written,
                 "chunks_written": chunk_number,
+                "next_cursor": next_cursor,  # save exact cursor for clean resume
                 "complete": False,
             })
             progress(f"  Checkpoint: {already_written:,} unique observables on disk so far")
 
         if total_fetched >= MAX_OBSERVABLES:
-            progress(f"  Cap of {MAX_OBSERVABLES:,} reached — stopping")
+            # Save cursor so next run with higher cap resumes exactly here
+            save_observable_state(batch_id, {
+                "pages_written": page,
+                "records_written": already_written,
+                "chunks_written": chunk_number,
+                "next_cursor": next_cursor,
+                "complete": False,
+                "capped_at": MAX_OBSERVABLES,
+            })
+            progress(f"  Cap of {MAX_OBSERVABLES:,} reached — stopping (raise MAX_OBSERVABLES and rerun to extend)")
             capped = True
             break
 
@@ -223,28 +243,34 @@ async def ingest_observables(ts: ThreatStreamClient, batch_id: str) -> int:
     if buffer:
         deduped = l1_dedup_batch(buffer)
         store.write_bulk(batch_id, f"observable_chunk_{chunk_number:04d}", deduped)
+        chunk_number += 1
         already_written += len(deduped)
 
-    # Consolidate all chunks into one final parquet
-    progress("Consolidating observable chunks...")
-    raw_dir = DATA_DIR / "raw" / batch_id
-    all_records: list[dict] = []
-    for chunk_file in sorted(raw_dir.glob("observable_chunk_*/bulk.parquet")):
-        rows = pq.read_table(str(chunk_file)).to_pylist()
-        all_records.extend(rows)
+    if not capped:
+        # Consolidate all chunks into one final parquet
+        progress("Consolidating observable chunks...")
+        raw_dir = DATA_DIR / "raw" / batch_id
+        all_records: list[dict] = []
+        for chunk_file in sorted(raw_dir.glob("observable_chunk_*/bulk.parquet")):
+            rows = pq.read_table(str(chunk_file)).to_pylist()
+            all_records.extend(rows)
 
-    final_deduped = l1_dedup_batch(all_records)
-    store.write_bulk(batch_id, "observable", final_deduped)
-    progress(f"  Final dedup: {len(all_records):,} raw -> {len(final_deduped):,} unique")
+        final_deduped = l1_dedup_batch(all_records)
+        store.write_bulk(batch_id, "observable", final_deduped)
+        progress(f"  Final dedup: {len(all_records):,} raw -> {len(final_deduped):,} unique")
 
-    save_observable_state(batch_id, {
-        "pages_written": page,
-        "records_written": len(final_deduped),
-        "chunks_written": chunk_number + 1,
-        "complete": not capped,
-    })
-
-    return len(final_deduped)
+        save_observable_state(batch_id, {
+            "pages_written": page,
+            "records_written": len(final_deduped),
+            "chunks_written": chunk_number,
+            "next_cursor": None,
+            "complete": True,
+        })
+        return len(final_deduped)
+    else:
+        # Capped — chunks are on disk, don't consolidate yet
+        # next_cursor was already saved in the cap branch above
+        return already_written
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 

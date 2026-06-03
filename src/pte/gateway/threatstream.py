@@ -60,6 +60,55 @@ class ThreatStreamClient:
                 else:
                     url = None
 
+    async def iter_observables_with_cursor(
+        self,
+        params: dict | None = None,
+        limit: int = 1000,
+        max_retries: int = 3,
+        resume_url: str | None = None,
+    ):
+        """Like iter_observables but yields (records, next_cursor_url) tuples.
+
+        Pass resume_url to start from a previously saved cursor position,
+        enabling exact resume without re-fetching already-downloaded pages.
+        """
+        import asyncio as _asyncio
+        base_url = f"{self.BASE}/api/v2/intelligence/"
+        query = {**(params or {}), "limit": limit, "order_by": "created_ts,id"}
+        # Remove internal _resume_cursor key if present
+        query.pop("_resume_cursor", None)
+
+        # Start from saved cursor URL if provided, otherwise start fresh
+        url: str | None = resume_url if resume_url else base_url
+        first_page = not bool(resume_url)  # don't send query params if using cursor URL
+
+        async with self._client() as http:
+            while url:
+                for attempt in range(1, max_retries + 1):
+                    try:
+                        resp = await http.get(url, params=query if first_page else {})
+                        first_page = False
+                        break
+                    except (httpx.ReadTimeout, httpx.ConnectError):
+                        if attempt == max_retries:
+                            raise
+                        wait = attempt * 5
+                        progress(f"  ReadTimeout — retrying in {wait}s (attempt {attempt}/{max_retries})")
+                        await _asyncio.sleep(wait)
+
+                if resp.status_code == 429:
+                    raise RateLimitError(backend="threatstream")
+                resp.raise_for_status()
+                data = resp.json()
+                objects = data.get("objects", [])
+                structured_log("observable_page", count=len(objects))
+
+                next_url = (data.get("meta") or {}).get("next")
+                next_cursor = f"{self.BASE}{next_url}" if next_url else None
+
+                yield objects, next_cursor
+                url = next_cursor
+
     async def get_entity_list(self, model_type: str, params: dict | None = None) -> list:
         url = f"{self.BASE}/api/v1/threat_model_search/"
         query = {**(params or {}), "model_type": model_type, "limit": 1000}
