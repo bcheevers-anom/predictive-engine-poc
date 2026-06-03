@@ -44,7 +44,18 @@ export default function DevPanel({ onBatchSelected }: Props) {
         <h3 style={{ fontSize: 14 }}>Select Existing Batch</h3>
         <select value={selectedBatch} onChange={e => { setSelectedBatch(e.target.value); onBatchSelected(e.target.value) }} style={{ width: '100%', padding: '6px 8px' }}>
           <option value="">-- select a batch --</option>
-          {batches.map(b => <option key={b.batch_id} value={b.batch_id}>{b.batch_id} ({b.from_date} to {b.to_date}, {b.total_deduplicated?.toLocaleString()} records)</option>)}
+          {batches.map(b => {
+            const count = (b as any).total_entities ?? b.total_deduplicated
+            const countStr = count ? `${count.toLocaleString()} entities` : ''
+            const method = (b as any).method || ''
+            return (
+              <option key={b.batch_id} value={b.batch_id}>
+                {b.batch_id.slice(0, 16)}…  {b.from_date} → {b.to_date}
+                {method ? `  [${method}]` : ''}
+                {countStr ? `  ${countStr}` : ''}
+              </option>
+            )
+          })}
         </select>
       </div>
       <div style={{ background: '#f9f9f9', padding: 16, borderRadius: 8 }}>

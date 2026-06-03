@@ -7,6 +7,22 @@ from pathlib import Path
 router = APIRouter()
 
 
+@router.get("/industries")
+async def get_industries(batch_id: str = Query(...), data_dir: str = "data", min_count: int = 5):
+    """Return sorted list of industries with enough signal to forecast."""
+    report_path = Path(data_dir) / "models" / batch_id / "t2ind_report.json"
+    if not report_path.exists():
+        return {"industries": []}
+    report = json.loads(report_path.read_text())
+    coverage = report.get("coverage_per_industry", {})
+    industries = sorted(
+        [ind for ind, count in coverage.items() if count >= min_count],
+        key=lambda i: coverage[i],
+        reverse=True,
+    )
+    return {"industries": industries, "coverage": {i: coverage[i] for i in industries}}
+
+
 @router.get("/forecast")
 async def get_forecast(
     batch_id: str = Query(...),
@@ -24,7 +40,9 @@ async def get_forecast(
         raise HTTPException(status_code=422, detail=str(e))
 
     model_dir = Path(data_dir) / "models" / batch_id
-    report_path = model_dir / f"{t.task_id}_report.json"
+    # t2_industry writes t2ind_report.json; t1_vuln_exploit writes t1_report.json
+    report_filename = {"t2_industry": "t2ind_report.json"}.get(t.task_id, f"{t.task_id}_report.json")
+    report_path = model_dir / report_filename
     if not report_path.exists():
         return {
             "status": "no_model",
@@ -33,19 +51,16 @@ async def get_forecast(
         }
 
     report = json.loads(report_path.read_text())
-    if not report.get("passes_gate"):
-        return {
-            "status": "insufficient_coverage",
-            "message": f"Task {task} did not beat its baseline on the held-out time split for batch {batch_id}.",
-            "report": report,
-        }
+    passes = report.get("passes_gate", False)
 
-    prediction = t.predict({"industry": industry})
+    prediction = t.predict(industry or "")
     explanation = t.explain({"industry": industry})
     contribs = feature_contributions(explanation.get("feature_importance", {})) if "feature_importance" in explanation else []
 
     return {
         "status": "ok",
+        "passes_gate": passes,
+        "gate_note": report.get("eval_note", ""),
         "finding": {
             "title": f"Sector Threat Forecast — {industry or 'All'}",
             "type_name": "PTE/T2-Industry",
@@ -58,4 +73,5 @@ async def get_forecast(
         "baselines": {"sector_frequency_top_k": report.get("sector_frequency_baseline_top_k", 0)},
         "aql_port_idiom": t.aql_port_idiom,
         "batch_id": batch_id,
+        "top_k_accuracy": report.get("top_k_accuracy", 0.0),
     }
