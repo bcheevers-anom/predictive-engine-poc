@@ -74,3 +74,32 @@ def test_t2_industry_produces_ranked_forecast(tmp_path):
 
 def test_t2_industry_aql_port_idiom():
     assert "RandomForest" in T2Industry.aql_port_idiom
+
+def test_t2_industry_evaluate_returns_full_metrics(tmp_path):
+    from pte.features.store import FeatureStore
+    store = FeatureStore(base_dir=str(tmp_path / "features"))
+    records = [
+        {
+            "entity_id": f"e{i}",
+            "industry": "Oil and Gas",
+            "tool": "Cobalt Strike" if i % 2 == 0 else "Mimikatz",
+            "tactic": "Lateral Movement",
+            "corroboration_score": 0.5,
+            "tier": "LLM_EXTRACTED",
+            "created_ts": f"2026-05-{(i % 28)+1:02d}",
+        }
+        for i in range(40)
+    ]
+    store.write("batch001", "industry_tool_cooccur", records)
+
+    t2 = T2Industry(batch_id="batch001", data_dir=str(tmp_path))
+    t2.fit()
+    report = t2.evaluate()
+
+    for key in ["precision_at_k", "recall_at_k", "f1_at_k", "map_score", "ndcg_at_k",
+                "model_type", "extraction_model", "feature_tier",
+                "train_rows", "holdout_rows", "industries_evaluated"]:
+        assert key in report, f"Missing key: {key}"
+
+    for key in ["precision_at_k", "recall_at_k", "f1_at_k", "map_score", "ndcg_at_k"]:
+        assert 0.0 <= report[key] <= 1.0, f"{key} out of range: {report[key]}"
