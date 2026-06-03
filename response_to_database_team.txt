@@ -79,3 +79,60 @@ We're happy to jump on a call if it's easier to walk through the requirements. T
 
 Barry
 Ilamona Threat Intelligence Team
+
+---
+
+UPDATE — 3 June 2026
+
+Hi team — following up on the above and wanted to share a correction and a status update.
+
+Apologies — we made an error in the original message. After re-reading the API docs more carefully and doing further testing, we did get a custom snapshot working. Specifically, using this payload format:
+
+  POST /api/v1/snapshot/
+  {
+    "intel_version": 1,
+    "custom_config": {
+      "filter": "created_ts >= 2024-01-01T00:00:00",
+      "format": "json_v2",
+      "chunk_ioc_count": 250000,
+      "use_org_whitelist": false
+    }
+  }
+
+This is now running (snapshot ID 8551547) and has so far exported 4.5 million observable records
+across 18 chunks — great progress, thank you.
+
+The earlier failures were due to us sending the format parameter at the top level rather than inside
+custom_config, and not including intel_version. Our mistake, not an issue with your setup.
+
+---
+
+WHAT'S STILL OUTSTANDING
+
+The snapshot is working well for observables (IOCs). However, as the API documentation confirms,
+the Snapshot API only exports threat intelligence (observables) — it does not export threat model
+entities such as actors, campaigns, malware families, or vulnerabilities.
+
+We are currently pulling those via the paginated REST API (GET /api/v1/threat_model_search/ with
+cursor pagination), which works but is slow — we're fetching ~4,000 full actor records one at a time,
+each requiring a separate GET to retrieve the description body.
+
+We have two remaining needs:
+
+1. Threat model entity bulk export — a way to bulk-export actors, campaigns, malware, and
+   vulnerabilities (with their full description HTML bodies) for the period 2024-01-01 to today.
+   The REST API pagination works but takes several hours for the full 2.5-year corpus, and the
+   description body is only available via single-object GET (/api/v1/actor/<id>/) — there is no
+   bulk path for it that we have found.
+
+   If there is a way to request a bulk export of threat model entities (even as a one-off file
+   drop), that would save us significant time and API load.
+
+2. Confirmation that the snapshot filter syntax is correct — we used "created_ts >= 2024-01-01T00:00:00"
+   and it appears to be working, but wanted to confirm this is the right field name and format for
+   date filtering in the snapshot custom_config, as the docs show "date_last" in one example.
+
+Again, apologies for the earlier confusion — happy to provide more detail or jump on a call.
+
+Barry
+Ilamona Threat Intelligence Team
