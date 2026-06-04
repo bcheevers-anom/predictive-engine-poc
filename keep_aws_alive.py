@@ -125,6 +125,13 @@ def main():
                 time.sleep(wait)
                 continue
             consecutive_failures = 0
+            # After refresh, sleep a full check interval so the new token
+            # (which has ~8hrs remaining) is what we read next time around.
+            # Without this sleep the loop immediately re-reads the OLD cache
+            # entry which still looks close to expiry, causing a refresh loop.
+            _banner(f"Next check in {CHECK_INTERVAL_SECONDS // 60} minutes.", "INFO")
+            time.sleep(CHECK_INTERVAL_SECONDS)
+            continue
 
         elif remaining < REFRESH_BEFORE_EXPIRY_SECONDS:
             mins = int(remaining / 60)
@@ -134,6 +141,9 @@ def main():
                 consecutive_failures += 1
             else:
                 consecutive_failures = 0
+                _banner(f"Next check in {CHECK_INTERVAL_SECONDS // 60} minutes.", "INFO")
+                time.sleep(CHECK_INTERVAL_SECONDS)
+                continue
 
         else:
             mins = int(remaining / 60)
