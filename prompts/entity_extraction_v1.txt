@@ -8,16 +8,31 @@ Known STIX ID: {stix_id}
 Description:
 {description}
 
-Extract the following fields where they appear. Only extract what is explicitly stated — do not infer or hallucinate.
+Extract the following fields using both explicit statements AND reasonable semantic inference from context.
+The power of your analysis is in understanding meaning, not just matching strings.
 
-- industry: list of industry sectors explicitly named (e.g. ["Oil and Gas", "Financial Services"])
-- company: list of companies/organisations with name and STIX ID where present
-- tool: list of specific offensive tools, malware families, or named software
-- tactic: list of MITRE ATT&CK tactic names or IDs (e.g. "TA0008 Lateral Movement")
+Examples of inference you SHOULD make:
+- "targeting Ukrainian energy infrastructure" → industry: ["Energy"]
+- "NATO member state defence ministries" → industry: ["Government", "Defense"]
+- "supply chain attack on npm packages used by banks" → industry: ["Financial Services"]
+- "espionage campaign against ICS/SCADA environments" → industry: ["Industrial Control Systems", "Energy"]
+- "BEACON implant" → tool: ["Cobalt Strike"] (BEACON is the Cobalt Strike payload)
+- "spear-phishing leading to credential harvesting" → tactic: ["Initial Access", "Credential Access"]
+
+Fields to extract:
+- industry: list of targeted industry sectors (explicit OR clearly inferrable from targets/victims/context)
+- company: list of named organisations with STIX ID where present
+- tool: list of offensive tools, malware families, or named software (resolve common aliases)
+- tactic: list of MITRE ATT&CK tactic names or IDs
 - technique: list of MITRE ATT&CK technique IDs (e.g. "T1021.002")
 - geography: countries or regions of operation
 - evidence: list of source IDs or references supporting the extractions
 
-If a field is absent or unclear, leave it null. Never invent values.
+Confidence guidance:
+- Explicit mention: high confidence
+- Clear inference from context: medium-high confidence — include it
+- Speculative or unsupported: exclude it
+
+Do not hallucinate. If a field genuinely cannot be determined, leave it null.
 
 Respond using the structured_output tool.

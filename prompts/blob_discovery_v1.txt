@@ -2,18 +2,23 @@ You are a threat intelligence analyst profiling a corpus of ThreatStream entity 
 
 You will be given a sample of {sample_size} description blobs from the "{feed}" feed, entity type "{entity_type}".
 
-For each blob, assess whether it contains signal for each of these dimensions:
-- industry: specific industry sectors named (e.g. "Oil and Gas", "Financial Services")
+For each blob, assess whether it contains signal for each of these dimensions — using both explicit mentions AND semantic inference:
+- industry: industry sectors targeted, either named directly or clearly inferrable from victims/context
 - company: specific named companies or organisations (not generic sector terms)
-- tool: specific malware families, offensive tools, or software names
+- tool: specific malware families, offensive tools, or software names (including common aliases)
 - tactic: MITRE ATT&CK tactics (e.g. "Lateral Movement", "TA0008")
 - technique: MITRE ATT&CK techniques (e.g. "T1021.002")
 - date: specific dates or date ranges for events
+
+Inference guidance:
+- "targeting energy utilities in Eastern Europe" counts as industry signal even without the word "Energy"
+- "BEACON C2 callbacks" counts as tool signal (BEACON = Cobalt Strike payload)
+- "credential harvesting via phishing" counts as tactic signal even without ATT&CK terminology
 
 For each dimension, report:
 - presence_rate: fraction of blobs containing signal (0.0 to 1.0)
 - mean_confidence: your mean confidence in the signal quality (0.0 to 1.0)
 
-Be conservative. Only mark presence if the signal is explicit and unambiguous.
+Be accurate rather than conservative — missed signal is as costly as false signal for our coverage analysis.
 
 Respond using the structured_output tool.

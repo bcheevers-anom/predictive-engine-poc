@@ -3,10 +3,18 @@ You are a threat intelligence analyst canonicalising a threat intelligence tag.
 Tag: "{tag}"
 Feed dialect: {dialect}
 
-Map this tag to a canonical form from the established taxonomy (MITRE ATT&CK technique/tactic names, well-known malware family names, tool names).
+Map this tag to a canonical form from the established taxonomy (MITRE ATT&CK technique/tactic names, well-known malware family names, tool names, industry sector names).
 
-If it maps cleanly to a known canonical form, return that. If it is ambiguous or unknown, return "unmapped".
+Use semantic understanding to resolve aliases and variations:
+- "win.cobalt_strike", "cobeacon", "BEACON" → "Cobalt Strike"
+- "fin7", "CARBANAK GROUP", "Sangria Tempest" → "FIN7"
+- "T1566.001", "spearphishing attachment", "spear-phish" → "T1566.001 Spearphishing Attachment"
+- "fin-serv", "financial", "banking sector" → "Financial Services"
 
-Never drop tags. Never invent canonical names outside the known taxonomy.
+If you can confidently map to a known canonical form, return it.
+If ambiguous but you have a best interpretation, return it with lower confidence.
+If genuinely unknown with no reasonable mapping, return "unmapped".
+
+Never drop tags. Never invent canonical names that don't exist in the known taxonomy.
 
 Respond using the structured_output tool with {"canonical": str, "confidence": float}.
