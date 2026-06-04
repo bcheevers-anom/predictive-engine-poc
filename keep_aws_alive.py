@@ -28,7 +28,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 AWS_PROFILE = os.environ.get("AWS_PROFILE", "staging")
-REFRESH_BEFORE_EXPIRY_SECONDS = 30 * 60   # refresh 30 min before expiry
+REFRESH_BEFORE_EXPIRY_SECONDS = 6 * 60 * 60  # refresh 6 hours before expiry
 CHECK_INTERVAL_SECONDS = 5 * 60           # check every 5 minutes
 SSO_CACHE_DIR = Path.home() / ".aws" / "sso" / "cache"
 
@@ -104,7 +104,7 @@ def main():
     print("=" * 55)
     print("  AWS Bedrock SSO Session Keeper")
     print(f"  Profile: {AWS_PROFILE}")
-    print(f"  Refreshes 30 minutes before expiry")
+    print(f"  Refreshes 6 hours before expiry (every ~2hrs on 8hr tokens)")
     print(f"  Checks every {CHECK_INTERVAL_SECONDS // 60} minutes")
     print("  Close this terminal to stop")
     print("=" * 55)
