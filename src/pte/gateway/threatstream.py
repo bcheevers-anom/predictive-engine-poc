@@ -40,7 +40,7 @@ class ThreatStreamClient:
                     try:
                         resp = await http.get(url, params=query)
                         break
-                    except (httpx.ReadTimeout, httpx.ConnectError) as exc:
+                    except (httpx.ReadTimeout, httpx.ConnectError, httpx.ReadError) as exc:
                         if attempt == max_retries:
                             raise
                         wait = attempt * 5
@@ -89,7 +89,7 @@ class ThreatStreamClient:
                         resp = await http.get(url, params=query if first_page else {})
                         first_page = False
                         break
-                    except (httpx.ReadTimeout, httpx.ConnectError):
+                    except (httpx.ReadTimeout, httpx.ConnectError, httpx.ReadError):
                         if attempt == max_retries:
                             raise
                         wait = attempt * 5
