@@ -103,15 +103,27 @@ class ExtractionRunner:
             progress(f"  {entity_type}: {len(pending)} to extract")
 
         extracted_now: list[PTEEntity] = []
-        for i, record in enumerate(pending):
+        completed = 0
+
+        async def extract_and_checkpoint(record: dict) -> PTEEntity | None:
             entity = await self.extract_one(record)
             if entity:
                 self._write_checkpoint(entity, entity_type)
-                extracted_now.append(entity)
-            if (i + 1) % 10 == 0 or i == 0:
+            return entity
+
+        # Process in batches matching the concurrency pool size
+        BATCH = self._pool._sem._value if hasattr(self._pool, '_sem') else 10
+        for batch_start in range(0, len(pending), BATCH):
+            batch = pending[batch_start:batch_start + BATCH]
+            results = await self._pool.map(extract_and_checkpoint, batch)
+            for entity in results:
+                if entity:
+                    extracted_now.append(entity)
+            completed += len(batch)
+            if completed % 10 == 0 or completed <= BATCH:
                 progress(
                     f"  {entity_type} progress",
-                    done=len(done_ids) + i + 1,
+                    done=len(done_ids) + completed,
                     total=len(records),
                     quarantined=self.quarantine.count(),
                 )

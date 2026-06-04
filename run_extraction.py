@@ -38,7 +38,7 @@ async def main():
         data_dir="data",
         batch_id=ENTITY_BATCH,
         run_id=make_run_id(),
-        max_concurrency=1,  # sequential — one LLM call at a time for predictable rate
+        max_concurrency=10,  # 10 parallel Bedrock calls — well within 60 RPM limit
     )
 
     progress("=== PTE Entity Extraction (resumable) ===", batch_id=ENTITY_BATCH)
