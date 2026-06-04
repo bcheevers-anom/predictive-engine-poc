@@ -54,10 +54,10 @@ async def main():
                 "entity_type": entity_type,
                 "source_feed": r.get("source") or r.get("source_feed", ""),
                 "stix_id": r.get("uuid", ""),
-                "description": r.get("description", "")[:MAX_DESCRIPTION_CHARS],
+                "description": (r.get("description") or "")[:MAX_DESCRIPTION_CHARS],
             }
             for i, r in enumerate(records)
-            if r.get("description", "").strip()
+            if (r.get("description") or "").strip()
         ]
 
         await runner.extract_entity_type(records_with_desc, entity_type, resume=True)
