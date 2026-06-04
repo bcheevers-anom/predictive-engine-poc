@@ -1,15 +1,23 @@
 """
 Resumable entity extraction for the PTE PoC.
 
-Run:  python run_extraction.py
-Resume after interruption: python run_extraction.py  (same command — it skips already-done IDs)
+Run:               python run_extraction.py
+Custom concurrency: python run_extraction.py --concurrency 5
+Resume:             python run_extraction.py  (same command — skips already-done IDs)
 
-Progress is checkpointed per entity after each LLM call, so the laptop can be
-closed or the process killed at any time without losing work.
+Progress is checkpointed per entity after each LLM call.
+Close the laptop any time — rerun to resume from where you left off.
+
+On Bedrock rate limits:
+  - A prominent !!!!! banner is printed
+  - Concurrency is halved automatically
+  - The failed entity is retried after a 30s pause
+  - No data is lost
 """
 from dotenv import load_dotenv
 load_dotenv()
 
+import argparse
 import asyncio
 import json
 from pathlib import Path
@@ -19,7 +27,7 @@ from pte.ingest.raw_store import RawStore
 from pte.common.provenance import make_run_id
 from pte.common.logging import progress
 
-# Use the full 2.5yr batch if available, otherwise fall back to the May 2026 entity batch
+# Use the full 2.5yr batch if available, otherwise fall back to May 2026 entity batch
 _STATE = Path("data/ingest_state.json")
 ENTITY_BATCH = (
     json.loads(_STATE.read_text()).get("batch_id")
@@ -30,7 +38,7 @@ ENTITY_TYPES = ["campaign", "actor", "malware"]
 MAX_DESCRIPTION_CHARS = 4000
 
 
-async def main():
+async def main(concurrency: int) -> None:
     llm = LLMClient()
     store = RawStore(base_dir="data/raw")
     runner = ExtractionRunner(
@@ -38,11 +46,13 @@ async def main():
         data_dir="data",
         batch_id=ENTITY_BATCH,
         run_id=make_run_id(),
-        max_concurrency=10,  # 10 parallel Bedrock calls — well within 60 RPM limit
+        max_concurrency=concurrency,
     )
 
     progress("=== PTE Entity Extraction (resumable) ===", batch_id=ENTITY_BATCH)
+    progress(f"Concurrency: {concurrency} parallel Bedrock calls")
     progress("Interrupt any time — progress is checkpointed per entity.")
+    progress("Rate limits handled automatically — concurrency drops if needed.")
     progress("Re-run the same command to resume from where you left off.")
     progress("")
 
@@ -64,14 +74,29 @@ async def main():
 
     # Consolidate all checkpoints into extracted_entities.json
     all_entities = runner.consolidate(ENTITY_TYPES)
-    progress("", )
+    progress("")
     progress("=== Extraction session complete ===",
              total_entities=len(all_entities),
              batch_id=ENTITY_BATCH)
     print(f"\nBATCH_ID={ENTITY_BATCH}")
     print(f"Entities on disk: {len(all_entities)}")
-    print(f"Next step: python run_features_train.py")
+    print(f"Next step: pte features build --batch-id {ENTITY_BATCH}")
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    parser = argparse.ArgumentParser(description="Resumable PTE entity extraction")
+    parser.add_argument(
+        "--concurrency", "-c",
+        type=int,
+        default=10,
+        help="Number of parallel Bedrock calls (default: 10). "
+             "Drops automatically on rate limit. Safe range: 1-20.",
+    )
+    args = parser.parse_args()
+
+    print(f"Starting extraction with concurrency={args.concurrency}")
+    print(f"Batch: {ENTITY_BATCH}")
+    print(f"Entity types: {', '.join(ENTITY_TYPES)}")
+    print()
+
+    asyncio.run(main(args.concurrency))
