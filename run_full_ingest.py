@@ -47,7 +47,7 @@ ENTITY_TYPES = [
     ("attackpattern",  "attackpattern"),
 ]
 
-MAX_OBSERVABLES = 1_000_000                 # cap to avoid multi-hour pulls
+MAX_OBSERVABLES = None                      # None = no cap, pull full corpus overnight
 OBSERVABLE_CHECKPOINT_PAGES = 50           # flush to disk every 50k records
 ENTITY_CONCURRENCY = 10
 
@@ -143,7 +143,14 @@ async def ingest_entities(ts: ThreatStreamClient, batch_id: str) -> int:
     progress(f"  Entity checkpoints are readable directly from the raw store.")
     return total_stored
 
-# ── Observable ingest ─────────────────────────────────────────────────────────
+# ── Observable ingest (parallel workers) ─────────────────────────────────────
+#
+# Splits the full date range into N_OBSERVABLE_WORKERS slices.
+# Each worker has its own cursor saved independently — workers can be
+# stopped and resumed without affecting each other.
+# Existing observable_chunk_* files are detected and counted toward progress.
+
+N_OBSERVABLE_WORKERS = 16  # parallel date-slice workers — stress tested up to 30 with no rate limits
 
 def observable_state_file(batch_id: str) -> Path:
     return DATA_DIR / "raw" / batch_id / "observable_ingest_state.json"
@@ -159,109 +166,247 @@ def save_observable_state(batch_id: str, state: dict) -> None:
     f.parent.mkdir(parents=True, exist_ok=True)
     f.write_text(json.dumps(state, indent=2))
 
-async def ingest_observables(ts: ThreatStreamClient, batch_id: str) -> int:
-    state = load_observable_state(batch_id)
-    if state.get("complete"):
-        progress(f"Observables already complete: {state['records_written']:,} records on disk")
-        return state["records_written"]
+def _date_slices(from_date: str, to_date: str, n: int) -> list[tuple[str, str]]:
+    """Split [from_date, to_date) into n equal slices by days."""
+    from datetime import date, timedelta
+    start = date.fromisoformat(from_date)
+    end = date.fromisoformat(to_date)
+    total_days = (end - start).days
+    slice_days = max(1, total_days // n)
+    slices = []
+    cursor = start
+    for i in range(n):
+        slice_end = min(cursor + timedelta(days=slice_days), end)
+        slices.append((cursor.isoformat(), slice_end.isoformat()))
+        cursor = slice_end
+        if cursor >= end:
+            break
+    return slices
 
-    already_written = state["records_written"]
-    resume_cursor = state.get("next_cursor")  # saved cursor URL for exact resume
 
-    if already_written > 0 and resume_cursor:
-        progress(f"Resuming observables from cursor (skipping {already_written:,} already written)...")
-    elif already_written > 0:
-        progress(f"Resuming observables: {already_written:,} already written (no cursor — will re-fetch and dedup)")
+async def _pull_slice(
+    worker_id: int,
+    from_d: str,
+    to_d: str,
+    batch_id: str,
+    headers: dict,
+    state: dict,
+    state_lock: asyncio.Lock,
+    cap_per_worker: int | None,
+) -> int:
+    """Pull one date slice. Resumable via saved cursor. Returns unique records written."""
+    import httpx as _httpx
+    from pte.dedup.l1_observable import normalise_observable_key
+    from pte.dedup.merge import build_canonical_record
 
+    wkey = f"worker_{worker_id}"
+    raw_dir = DATA_DIR / "raw" / batch_id
+    chunk_dir = raw_dir / f"observable_chunk_w{worker_id:02d}"
+    chunk_dir.mkdir(parents=True, exist_ok=True)
+
+    # Check if already complete
+    async with state_lock:
+        if state.get(f"{wkey}_complete"):
+            existing = pq.read_metadata(str(chunk_dir / "bulk.parquet")).num_rows if (chunk_dir / "bulk.parquet").exists() else 0
+            progress(f"  [worker-{worker_id}] already complete ({existing:,} records), skipping")
+            return existing
+        resume_url = state.get(f"{wkey}_cursor")
+        already_fetched = state.get(f"{wkey}_fetched", 0)
+
+    base_url = "https://api.threatstream.com/api/v2/intelligence/"
+    url = resume_url or base_url
     params = {
-        "created_ts__gte": FROM_DATE,
-        "created_ts__lte": TO_DATE,
+        "limit": 1000,
+        "order_by": "created_ts,id",
         "status": "active",
-    }
+        "created_ts__gte": from_d,
+        "created_ts__lte": to_d,
+    } if not resume_url else {}
 
-    store = RawStore(base_dir=str(DATA_DIR / "raw"))
-    buffer: list[dict] = []
-    page = state.get("pages_written", 0)  # continue page counter from last checkpoint
-    total_fetched = already_written        # count already-written records toward cap
-    chunk_number = state.get("chunks_written", 0)
-    capped = False
+    seen: dict[str, list[dict]] = {}  # key -> best record for in-memory dedup
+    fetched = 0
+    pages = 0
 
-    # If we have a saved cursor, pass it as the starting URL override
-    iter_params = dict(params)
-    if resume_cursor:
-        # Pass cursor as a special override — iter_observables will use it as the first URL
-        iter_params["_resume_cursor"] = resume_cursor
+    if already_fetched > 0:
+        progress(f"  [worker-{worker_id}] resuming {from_d} to {to_d}, already had {already_fetched:,}")
+    else:
+        progress(f"  [worker-{worker_id}] starting {from_d} to {to_d}")
 
-    async for records, next_cursor in ts.iter_observables_with_cursor(params=iter_params, limit=1000, resume_url=resume_cursor):
-        buffer.extend(records)
-        total_fetched += len(records)
-        page += 1
+    while url:
+        for attempt in range(4):
+            try:
+                async with _httpx.AsyncClient(headers=headers, timeout=60.0) as http:
+                    resp = await http.get(url, params=params)
+                    resp.raise_for_status()
+                    data = resp.json()
+                break
+            except (_httpx.ReadTimeout, _httpx.ConnectError, _httpx.ReadError):
+                if attempt == 3:
+                    raise
+                await asyncio.sleep((attempt + 1) * 5)
 
-        if page % 5 == 0:
-            progress(f"  observables page {page}", fetched=f"{total_fetched:,}")
-
-        # Checkpoint every OBSERVABLE_CHECKPOINT_PAGES pages
-        if page % OBSERVABLE_CHECKPOINT_PAGES == 0:
-            deduped = l1_dedup_batch(buffer)
-            store.write_bulk(batch_id, f"observable_chunk_{chunk_number:04d}", deduped)
-            chunk_number += 1
-            already_written += len(deduped)
-            buffer = []
-            save_observable_state(batch_id, {
-                "pages_written": page,
-                "records_written": already_written,
-                "chunks_written": chunk_number,
-                "next_cursor": next_cursor,  # save exact cursor for clean resume
-                "complete": False,
-            })
-            progress(f"  Checkpoint: {already_written:,} unique observables on disk so far")
-
-        if MAX_OBSERVABLES is not None and total_fetched >= MAX_OBSERVABLES:
-            # Save cursor so next run with higher cap resumes exactly here
-            save_observable_state(batch_id, {
-                "pages_written": page,
-                "records_written": already_written,
-                "chunks_written": chunk_number,
-                "next_cursor": next_cursor,
-                "complete": False,
-                "capped_at": MAX_OBSERVABLES,
-            })
-            progress(f"  Cap of {MAX_OBSERVABLES:,} reached — stopping (raise MAX_OBSERVABLES and rerun to extend)")
-            capped = True
+        objects = data.get("objects", [])
+        if not objects:
             break
 
-    # Write remaining buffer
-    if buffer:
-        deduped = l1_dedup_batch(buffer)
-        store.write_bulk(batch_id, f"observable_chunk_{chunk_number:04d}", deduped)
-        chunk_number += 1
-        already_written += len(deduped)
+        for r in objects:
+            key = normalise_observable_key(r.get("value", ""), r.get("itype", ""))
+            if key not in seen or (r.get("confidence") or 0) > (seen[key].get("confidence") or 0):
+                seen[key] = r
 
-    if not capped:
-        # Consolidate all chunks into one final parquet
-        progress("Consolidating observable chunks...")
-        raw_dir = DATA_DIR / "raw" / batch_id
-        all_records: list[dict] = []
-        for chunk_file in sorted(raw_dir.glob("observable_chunk_*/bulk.parquet")):
-            rows = pq.read_table(str(chunk_file)).to_pylist()
-            all_records.extend(rows)
+        fetched += len(objects)
+        pages += 1
 
-        final_deduped = l1_dedup_batch(all_records)
-        store.write_bulk(batch_id, "observable", final_deduped)
-        progress(f"  Final dedup: {len(all_records):,} raw -> {len(final_deduped):,} unique")
+        next_url = (data.get("meta") or {}).get("next")
+        url = f"https://api.threatstream.com{next_url}" if next_url else None
+        params = {}
 
-        save_observable_state(batch_id, {
-            "pages_written": page,
-            "records_written": len(final_deduped),
-            "chunks_written": chunk_number,
-            "next_cursor": None,
-            "complete": True,
-        })
-        return len(final_deduped)
+        # Checkpoint every 50 pages (50k records)
+        if pages % 50 == 0:
+            deduped = list(seen.values())
+            _write_parquet_merge(chunk_dir / "bulk.parquet", deduped)
+            async with state_lock:
+                state[f"{wkey}_fetched"] = already_fetched + fetched
+                state[f"{wkey}_cursor"] = url
+                _save_state_sync(batch_id, state)
+            seen = {}
+            progress(f"  [worker-{worker_id}] {from_d}/{to_d} page {pages}, fetched={fetched:,}")
+
+        if cap_per_worker and (already_fetched + fetched) >= cap_per_worker:
+            async with state_lock:
+                state[f"{wkey}_cursor"] = url
+                state[f"{wkey}_fetched"] = already_fetched + fetched
+                _save_state_sync(batch_id, state)
+            break
+
+    # Final flush
+    if seen:
+        _write_parquet_merge(chunk_dir / "bulk.parquet", list(seen.values()))
+
+    final = pq.read_metadata(str(chunk_dir / "bulk.parquet")).num_rows if (chunk_dir / "bulk.parquet").exists() else 0
+
+    async with state_lock:
+        state[f"{wkey}_complete"] = not bool(url)  # complete only if cursor exhausted
+        state[f"{wkey}_fetched"] = already_fetched + fetched
+        _save_state_sync(batch_id, state)
+
+    progress(f"  [worker-{worker_id}] done -- {fetched:,} raw -> {final:,} unique on disk")
+    return final
+
+
+def _write_parquet_merge(path: Path, records: list[dict]) -> None:
+    """Merge new records into existing parquet, deduping by (value, itype)."""
+    if not records:
+        return
+    from pte.dedup.l1_observable import normalise_observable_key
+    new_table = pa.Table.from_pylist(records)
+    if path.exists():
+        existing = pq.read_table(str(path)).to_pylist()
+        combined = existing + records
+        seen = {}
+        for r in combined:
+            key = normalise_observable_key(r.get("value", ""), r.get("itype", ""))
+            if key not in seen or (r.get("confidence") or 0) > (seen[key].get("confidence") or 0):
+                seen[key] = r
+        pq.write_table(pa.Table.from_pylist(list(seen.values())), str(path), compression="snappy")
     else:
-        # Capped — chunks are on disk, don't consolidate yet
-        # next_cursor was already saved in the cap branch above
-        return already_written
+        pq.write_table(new_table, str(path), compression="snappy")
+
+
+def _save_state_sync(batch_id: str, state: dict) -> None:
+    f = observable_state_file(batch_id)
+    f.write_text(json.dumps(state, indent=2))
+
+
+async def ingest_observables(ts: ThreatStreamClient, batch_id: str) -> int:
+    """Pull observables using N parallel date-slice workers. Fully resumable."""
+    import os
+    state = load_observable_state(batch_id)
+
+    # Check if a previous sequential run exists — honour it
+    if state.get("complete"):
+        existing = state.get("records_written", 0)
+        progress(f"Observables already complete: {existing:,} records on disk")
+        return existing
+
+    # Count already-downloaded chunks from previous sequential run
+    raw_dir = DATA_DIR / "raw" / batch_id
+    existing_seq_chunks = sorted(raw_dir.glob("observable_chunk_[0-9]*/bulk.parquet"))
+    if existing_seq_chunks:
+        seq_records = sum(pq.read_metadata(str(c)).num_rows for c in existing_seq_chunks)
+        progress(f"  Found {len(existing_seq_chunks)} existing sequential chunks ({seq_records:,} unique records) — will be included in final consolidation")
+
+    headers = {"Authorization": f"apikey {os.environ['TS_API_USER']}:{os.environ['TS_API_KEY']}"}
+    slices = _date_slices(FROM_DATE, TO_DATE, N_OBSERVABLE_WORKERS)
+
+    # Per-worker cap: if MAX_OBSERVABLES set, divide evenly across workers
+    cap_per_worker = (MAX_OBSERVABLES // N_OBSERVABLE_WORKERS) if MAX_OBSERVABLES else None
+    cap_str = f"capped at {MAX_OBSERVABLES:,} total" if MAX_OBSERVABLES else "no cap"
+    progress(f"\nStep 3: Observable pull ({cap_str}, {N_OBSERVABLE_WORKERS} parallel workers)...")
+    for i, (fd, td) in enumerate(slices):
+        progress(f"  Worker {i}: {fd} to {td}")
+
+    state_lock = asyncio.Lock()
+    tasks = [
+        _pull_slice(i, fd, td, batch_id, headers, state, state_lock, cap_per_worker)
+        for i, (fd, td) in enumerate(slices)
+    ]
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+
+    # Report any worker errors
+    total_worker_unique = 0
+    for i, r in enumerate(results):
+        if isinstance(r, Exception):
+            progress(f"  Worker {i} ERROR: {r}")
+        else:
+            total_worker_unique += r
+
+    # Consolidate: sequential chunks + parallel worker chunks -> final parquet
+    progress("  Consolidating all observable chunks via DuckDB...")
+    import duckdb
+    all_chunk_patterns = []
+    for c in existing_seq_chunks:
+        all_chunk_patterns.append(str(c))
+    for i in range(N_OBSERVABLE_WORKERS):
+        p = raw_dir / f"observable_chunk_w{i:02d}" / "bulk.parquet"
+        if p.exists():
+            all_chunk_patterns.append(str(p))
+
+    if not all_chunk_patterns:
+        progress("  No observable chunks found.")
+        return 0
+
+    dest = str(raw_dir / "observable" / "bulk.parquet")
+    Path(dest).parent.mkdir(parents=True, exist_ok=True)
+    pattern = "', '".join(all_chunk_patterns)
+
+    con = duckdb.connect()
+    con.execute(f"""
+        COPY (
+            SELECT * EXCLUDE(rn) FROM (
+                SELECT *, ROW_NUMBER() OVER (
+                    PARTITION BY value, itype
+                    ORDER BY COALESCE(confidence, 0) DESC
+                ) AS rn
+                FROM read_parquet(['{pattern}'], union_by_name=true)
+                WHERE value IS NOT NULL AND value != ''
+                  AND itype  IS NOT NULL AND itype  != ''
+            ) WHERE rn = 1
+        ) TO '{dest}' (FORMAT PARQUET, COMPRESSION SNAPPY)
+    """)
+    result = con.execute(f"SELECT COUNT(*) FROM read_parquet('{dest}')").fetchone()
+    final_count = result[0] if result else 0
+    con.close()
+
+    all_complete = all(
+        state.get(f"worker_{i}_complete", False) for i in range(N_OBSERVABLE_WORKERS)
+    )
+    state["complete"] = all_complete
+    state["records_written"] = final_count
+    _save_state_sync(batch_id, state)
+
+    progress(f"  Final: {final_count:,} unique observables")
+    return final_count
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 
