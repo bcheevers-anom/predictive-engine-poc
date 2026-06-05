@@ -207,23 +207,41 @@ async def pull_quarter(
 
 
 def _append_parquet(path: Path, records: list[dict]) -> None:
-    """Append records to a parquet file, creating it if needed."""
+    """Append records to a parquet file, creating it if needed.
+    Uses DuckDB union_by_name to handle schema mismatches across PyArrow versions."""
     if not records:
         return
-    new_table = pa.Table.from_pylist(records)
+    import duckdb, tempfile, os
+
+    # Write new records to a temp file
+    tmp = Path(str(path) + ".tmp.parquet")
+    pq.write_table(pa.Table.from_pylist(records), str(tmp), compression="snappy")
+
     if path.exists():
-        existing = pq.read_table(str(path))
-        combined = pa.concat_tables([existing, new_table])
-        # Final dedup on combined
-        rows = combined.to_pylist()
-        seen = {}
-        for r in rows:
-            key = normalise_observable_key(r.get("value", ""), r.get("itype", ""))
-            if key not in seen:
-                seen[key] = r
-        pq.write_table(pa.Table.from_pylist(list(seen.values())), str(path), compression="snappy")
+        # Use DuckDB to merge with union_by_name + dedup
+        dest = str(path)
+        con = duckdb.connect()
+        con.execute(f"""
+            COPY (
+                SELECT * EXCLUDE(rn) FROM (
+                    SELECT *,
+                           ROW_NUMBER() OVER (
+                               PARTITION BY value, itype
+                               ORDER BY COALESCE(confidence, 0) DESC
+                           ) AS rn
+                    FROM read_parquet(['{dest}', '{str(tmp)}'], union_by_name=true)
+                    WHERE value IS NOT NULL AND itype IS NOT NULL
+                ) WHERE rn = 1
+            ) TO '{dest}.new' (FORMAT PARQUET, COMPRESSION SNAPPY)
+        """)
+        con.close()
+        os.replace(dest + ".new", dest)
     else:
-        pq.write_table(new_table, str(path), compression="snappy")
+        os.replace(str(tmp), str(path))
+
+    # Clean up temp file if it still exists
+    if tmp.exists():
+        tmp.unlink(missing_ok=True)
 
 # ── Consolidate ───────────────────────────────────────────────────────────────
 
