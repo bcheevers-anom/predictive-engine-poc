@@ -247,7 +247,9 @@ def consolidate(quarters: list[tuple]) -> int:
         progress("No parquet files to consolidate")
         return 0
 
-    dest = str(raw_dir / "observable" / "bulk.parquet")
+    # Write to a separate file — does NOT overwrite observable/bulk.parquet
+    # so run_full_ingest chunks are preserved and can be resumed independently
+    dest = str(raw_dir / "observable_stratified" / "bulk.parquet")
     Path(dest).parent.mkdir(parents=True, exist_ok=True)
 
     pattern = "', '".join(sources)
@@ -273,7 +275,8 @@ def consolidate(quarters: list[tuple]) -> int:
     result = con.execute(f"SELECT COUNT(*) FROM read_parquet('{dest}')").fetchone()
     count = result[0] if result else 0
     con.close()
-    progress(f"Consolidation complete: {count:,} unique observables → {dest}")
+    progress(f"Consolidation complete: {count:,} unique observables -> {dest}")
+    progress(f"NOTE: observable/bulk.parquet (full pagination run) is untouched.")
     return count
 
 # ── Main ──────────────────────────────────────────────────────────────────────
@@ -326,7 +329,8 @@ async def main(test_mode: bool = False) -> None:
         manifest_path = DATA_DIR / "frozen" / BATCH_ID / "manifest.json"
         if manifest_path.exists():
             manifest = json.loads(manifest_path.read_text())
-            manifest["total_observables"] = total
+            manifest["total_observables_stratified"] = total
+            manifest["observable_stratified_path"] = "data/raw/full-a1f4ddec-bc3e44ce3e31/observable_stratified/bulk.parquet"
             manifest["stratified_quarters"] = [q[0] for q in quarters]
             manifest_path.write_text(json.dumps(manifest, indent=2))
 
