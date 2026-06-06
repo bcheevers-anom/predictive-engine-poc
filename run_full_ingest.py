@@ -150,7 +150,50 @@ async def ingest_entities(ts: ThreatStreamClient, batch_id: str) -> int:
 # stopped and resumed without affecting each other.
 # Existing observable_chunk_* files are detected and counted toward progress.
 
-N_OBSERVABLE_WORKERS = 16  # parallel date-slice workers — stress tested up to 30 with no rate limits
+N_OBSERVABLE_WORKERS = 4   # starting concurrency — scales up/down dynamically based on API response
+N_WORKERS_MAX = 8          # ceiling — conservative for shared production infrastructure
+N_WORKERS_MIN = 1          # floor
+SCALE_UP_AFTER = 20        # consecutive clean pages before adding a worker
+SCALE_DOWN_ON_ERROR = True # immediately drop a worker on 429/401/5xx
+
+class ConcurrencyController:
+    """Dynamically adjusts the number of active workers based on API health.
+
+    - Scales up (adds a worker) after SCALE_UP_AFTER consecutive clean pages
+    - Scales down (removes a worker) immediately on 429/401/5xx
+    - Emits a progress line whenever concurrency changes
+    """
+
+    def __init__(self, start: int, min_workers: int, max_workers: int, scale_up_after: int):
+        self._current = start
+        self._min = min_workers
+        self._max = max_workers
+        self._scale_up_after = scale_up_after
+        self._clean_pages = 0
+        self._lock = asyncio.Lock()
+
+    @property
+    def current(self) -> int:
+        return self._current
+
+    async def record_success(self) -> None:
+        async with self._lock:
+            self._clean_pages += 1
+            if self._clean_pages >= self._scale_up_after and self._current < self._max:
+                self._current += 1
+                self._clean_pages = 0
+                progress(f"  [concurrency] scaling UP to {self._current} workers (API healthy)")
+
+    async def record_error(self, status_code: int) -> None:
+        async with self._lock:
+            self._clean_pages = 0
+            if self._current > self._min:
+                old = self._current
+                self._current = max(self._min, self._current // 2)
+                progress(f"  [concurrency] scaling DOWN {old} -> {self._current} workers (HTTP {status_code})")
+            else:
+                progress(f"  [concurrency] already at minimum ({self._min} workers), cannot scale down further")
+
 
 def observable_state_file(batch_id: str) -> Path:
     return DATA_DIR / "raw" / batch_id / "observable_ingest_state.json"
@@ -193,6 +236,7 @@ async def _pull_slice(
     state: dict,
     state_lock: asyncio.Lock,
     cap_per_worker: int | None,
+    controller: "ConcurrencyController | None" = None,
 ) -> int:
     """Pull one date slice. Resumable via saved cursor. Returns unique records written."""
     import httpx as _httpx
@@ -237,8 +281,19 @@ async def _pull_slice(
             try:
                 async with _httpx.AsyncClient(headers=headers, timeout=60.0) as http:
                     resp = await http.get(url, params=params)
+                    if resp.status_code in (429, 401, 503):
+                        if controller:
+                            await controller.record_error(resp.status_code)
+                        wait = 60 if resp.status_code == 429 else 30
+                        progress(f"  [worker-{worker_id}] HTTP {resp.status_code} — pausing {wait}s")
+                        await asyncio.sleep(wait)
+                        if resp.status_code == 401:
+                            return 0  # account disabled — exit cleanly
+                        continue
                     resp.raise_for_status()
                     data = resp.json()
+                    if controller:
+                        await controller.record_success()
                 break
             except (_httpx.ReadTimeout, _httpx.ConnectError, _httpx.ReadError):
                 if attempt == 3:
@@ -347,8 +402,15 @@ async def ingest_observables(ts: ThreatStreamClient, batch_id: str) -> int:
         progress(f"  Worker {i}: {fd} to {td}")
 
     state_lock = asyncio.Lock()
+    controller = ConcurrencyController(
+        start=N_OBSERVABLE_WORKERS,
+        min_workers=N_WORKERS_MIN,
+        max_workers=N_WORKERS_MAX,
+        scale_up_after=SCALE_UP_AFTER,
+    )
+    progress(f"  Starting with {N_OBSERVABLE_WORKERS} workers, scaling up to {N_WORKERS_MAX} max")
     tasks = [
-        _pull_slice(i, fd, td, batch_id, headers, state, state_lock, cap_per_worker)
+        _pull_slice(i, fd, td, batch_id, headers, state, state_lock, cap_per_worker, controller)
         for i, (fd, td) in enumerate(slices)
     ]
     results = await asyncio.gather(*tasks, return_exceptions=True)
