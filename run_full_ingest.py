@@ -150,10 +150,10 @@ async def ingest_entities(ts: ThreatStreamClient, batch_id: str) -> int:
 # stopped and resumed without affecting each other.
 # Existing observable_chunk_* files are detected and counted toward progress.
 
-N_OBSERVABLE_WORKERS = 4   # starting concurrency — scales up/down dynamically based on API response
-N_WORKERS_MAX = 8          # ceiling — conservative for shared production infrastructure
+N_OBSERVABLE_WORKERS = 1   # start sequential — documented limit is 50 req/min per user
+N_WORKERS_MAX = 2          # ceiling — 2 workers ≈ 92 req/min, just under 2x limit; only raise if Anomali confirms
 N_WORKERS_MIN = 1          # floor
-SCALE_UP_AFTER = 20        # consecutive clean pages before adding a worker
+SCALE_UP_AFTER = 50        # consecutive clean pages before adding a worker (conservative)
 SCALE_DOWN_ON_ERROR = True # immediately drop a worker on 429/401/5xx
 
 class ConcurrencyController:
