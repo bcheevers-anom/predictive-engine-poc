@@ -34,13 +34,28 @@ class T2Industry(Task):
         records = self._load_cooccur()
         if not records:
             return
-        counter: Counter = Counter()
-        for r in records:
-            if r.get("tool"):  # skip empty-tool rows
-                counter[(r.get("industry", ""), r.get("tool", ""))] += 1
-        self._industry_tool_counts = dict(counter)
+
+        # Check whether TF-IDF scores are available in the feature table
+        has_tfidf = any(r.get("tfidf_score") for r in records[:100])
+
+        if has_tfidf:
+            # Use summed TF-IDF score as the ranking signal — penalises ubiquitous tools
+            from collections import defaultdict as _dd
+            scores: dict[tuple, float] = _dd(float)
+            for r in records:
+                if r.get("tool"):
+                    scores[(r.get("industry", ""), r.get("tool", ""))] += r.get("tfidf_score", 0.0)
+            self._industry_tool_counts = dict(scores)
+        else:
+            # Fall back to raw counts for batches without TF-IDF
+            counter: Counter = Counter()
+            for r in records:
+                if r.get("tool"):
+                    counter[(r.get("industry", ""), r.get("tool", ""))] += 1
+            self._industry_tool_counts = dict(counter)
+
         with open(self._model_dir / "t2ind_counts.json", "w") as f:
-            json.dump({str(k): v for k, v in counter.items()}, f)
+            json.dump({str(k): v for k, v in self._industry_tool_counts.items()}, f)
 
     def predict(self, industry: str, top_k: int = 3) -> list[dict]:
         if self._industry_tool_counts is None:
